@@ -14,7 +14,7 @@ from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from .._agents import AgentProtocol
 from .._threads import AgentThread
-from .._types import AgentRunResponse, AgentRunResponseUpdate, ChatMessage
+from .._types import AgentRunResponse, AgentRunResponseUpdate, ChatMessage, Role
 from ..observability import create_processing_span
 from ._checkpoint import WorkflowCheckpoint
 from ._events import (
@@ -1434,6 +1434,7 @@ class AgentExecutor(Executor):
                 # Skip empty updates (no textual or structural content)
                 if not update:
                     continue
+
                 contents = getattr(update, "contents", None)
                 text_val = getattr(update, "text", "")
                 has_text_content = False
@@ -1442,6 +1443,10 @@ class AgentExecutor(Executor):
                         if getattr(c, "text", None):
                             has_text_content = True
                             break
+
+                if update.role == Role.TOOL and isinstance(update, AgentRunResponseUpdate):
+                    await ctx.add_event(AgentRunUpdateEvent(self.id, update))
+
                 if not (text_val or has_text_content):
                     continue
                 updates.append(update)

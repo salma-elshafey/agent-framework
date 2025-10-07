@@ -2799,6 +2799,8 @@ class AgentRunResponseUpdate(SerializationMixin):
         created_at: CreatedAtT | None = None,
         additional_properties: MutableMapping[str, Any] | None = None,
         raw_representation: Any | None = None,
+        function_call: FunctionCallContent | dict[str, Any] | None = None,
+        function_result: FunctionResultContent | dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize an AgentRunResponseUpdate.
@@ -2837,6 +2839,8 @@ class AgentRunResponseUpdate(SerializationMixin):
         self.created_at = created_at
         self.additional_properties = additional_properties
         self.raw_representation: Any | list[Any] | None = raw_representation
+        self.function_call = function_call
+        self.function_result = function_result
 
     @property
     def text(self) -> str:

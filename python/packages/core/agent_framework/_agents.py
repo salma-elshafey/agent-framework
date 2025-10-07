@@ -26,6 +26,8 @@ from ._types import (
     ChatOptions,
     ChatResponse,
     ChatResponseUpdate,
+    FunctionCallContent,
+    FunctionResultContent,
     Role,
     ToolMode,
 )
@@ -889,6 +891,10 @@ class ChatAgent(BaseAgent):
         agent_name = self._get_agent_name()
         response_updates: list[ChatResponseUpdate] = []
 
+
+        function_call_dict: dict[str, FunctionCallContent] = {}
+
+
         # Resolve final tool list (runtime provided tools + local MCP server tools)
         final_tools: list[ToolProtocol | MutableMapping[str, Any] | Callable[..., Any]] = []
         normalized_tools: list[ToolProtocol | Callable[..., Any] | MutableMapping[str, Any]] = (  # type: ignore[reportUnknownVariableType]
@@ -934,18 +940,38 @@ class ChatAgent(BaseAgent):
         ):
             response_updates.append(update)
 
+
+            # Collect function call contents to link later with results
+            if isinstance(update, ChatResponseUpdate) and update.role == Role.ASSISTANT and update.contents and len(update.contents) > 0:
+                content = update.contents[0]
+                if isinstance(content, FunctionCallContent) and content.call_id:
+                    function_call_dict[content.call_id] = content
+
+
+
             if update.author_name is None:
                 update.author_name = agent_name
+
+            function_call = None
+            function_result = None
+            fake_text = update.text
+            if update.role == Role.TOOL and update.contents and len(update.contents) > 0 and isinstance(update.contents[0], FunctionResultContent):
+                function_result = update.contents[0]
+                function_call = function_call_dict.get(function_result.call_id)
+                fake_text = update.text or "hack for REAL response"
 
             yield AgentRunResponseUpdate(
                 contents=update.contents,
                 role=update.role,
+                text=update.text or fake_text,      # HACK: We need to provide some text here to make sure the response is valid
                 author_name=update.author_name,
                 response_id=update.response_id,
                 message_id=update.message_id,
                 created_at=update.created_at,
                 additional_properties=update.additional_properties,
                 raw_representation=update,
+                function_call=function_call,
+                function_result=function_result
             )
 
         response = ChatResponse.from_chat_response_updates(response_updates)
