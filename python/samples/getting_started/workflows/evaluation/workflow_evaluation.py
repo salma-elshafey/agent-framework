@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 
 import asyncio
+import os
 
 from agent_framework import (
     AgentExecutorResponse,
@@ -19,6 +20,15 @@ from agent_framework import (
 )
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import AzureCliCredential
+
+# from azure.identity import DefaultAzureCredential
+# from azure.ai.projects import AIProjectClient
+# from azure.ai.projects.models import (
+#     Evaluation,
+#     InputDataset,
+#     EvaluatorConfiguration,
+# )
+from azure.ai.evaluation import ToolCallAccuracyEvaluator
 
 # from ._tool_definitions import (
 #     calculator_tool_spec,
@@ -49,6 +59,9 @@ from _tools import (
 """
 Sample: Evaluate Agents in a workflow
 """
+
+from dotenv import load_dotenv
+load_dotenv()
 
 
 @executor(id="start_executor")
@@ -93,7 +106,7 @@ Summerize the findings from other agents and provide a short answer.
         await ctx.yield_output(response.messages[-1].text)
 
 
-async def main(query: str):
+async def main(query: str, expected_tool_calls: list[str]) -> None:
     tool_restrictions = """
 Only use the tools provided and only use the information from the tools to answer the question.
 If the tools do not provide enough information, respond with 'no further information provided'.
@@ -152,6 +165,7 @@ If the tools do not provide enough information, respond with 'no further informa
     # Stream events from the workflow. We aggregate partial token updates per executor for readable output.
     last_executor_id = None
 
+    tool_calls = []
     events = workflow.run_stream(query)
     async for event in events:
         if isinstance(event, AgentRunUpdateEvent):
@@ -165,16 +179,74 @@ If the tools do not provide enough information, respond with 'no further informa
 
             if isinstance(event.data, AgentRunResponseUpdate) and "result" in event.data.contents[0].__dict__:
                 print(f"* * * AgentRunResponseUpdate: {event.data.contents[0].result}")
+                tool_call = {
+                    # "type": "tool_call",
+                    # "name": event.data.contents[0].tool_name,
+                    # "tool_call": {
+                    #     "id": event.data.contents[0].id,
+                    #     "type": "function",
+                    #     "function": {
+                    #         "name": event.data.contents[0].tool_name,
+                    #         "arguments": event.data.contents[0].tool_input,
+                    #     },
+                    # },
+                }
+                tool_calls.append(tool_call)
 
         elif isinstance(event, WorkflowOutputEvent):
             print("===== Final Output =====")
             print(event.data)
             response = event.data
 
+    # Run evaluation
+    print(query)
+    print(response)
+
+    import os
+    from azure.ai.evaluation import ToolCallAccuracyEvaluator
+
+    model_config = {
+        "azure_endpoint": os.environ.get("AZURE_OPENAI_ENDPOINT"),
+        "api_key": os.environ.get("AZURE_OPENAI_API_KEY"),
+        "azure_deployment": os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"),
+    }
+
+    tool_call_quality_evaluator = ToolCallAccuracyEvaluator(model_config=model_config)
+    result = tool_call_quality_evaluator(
+        query="How is the weather in New York?",
+        response="The weather in New York is sunny.",
+        tool_calls={
+            "type": "tool_call",
+            "name": "fetch_weather",
+            "tool_call": {
+                "id": "call_eYtq7fMyHxDWIgeG2s26h0lJ",
+                "type": "function",
+                "function": {"name": "fetch_weather", "arguments": {"location": "New York"}},
+            },
+        },
+        tool_definitions={
+            "id": "fetch_weather",
+            "name": "fetch_weather",
+            "description": "Fetches the weather information for the specified location.",
+            "parameters": {
+                "type": "object",
+                "properties": {"location": {"type": "string", "description": "The location to fetch weather for."}},
+            },
+        },
+    )
+    print("Tool Call Quality Evaluation Result:", result)
+
 
 
 if __name__ == "__main__":
     # query = "Compute all the prime numbers between 20 and 40 and then find the two largest prime numbers. What is the product of these two numbers, and what is the difference from the product of all the prime numbers between 1 and 20?\n\nPlease output the following information:\n\n1. The two largest primes between 20 and 40\n2. Product of the two largest primes between 20 and 40\n3. The difference between product of prime numbers between 1 and 20 and the product of the two largest primes between 20 and 40"
+    # expected_tool_calls = ["calculator", "google_search", "wikipedia_search"]
+    # asyncio.run(main(query=query, expected_tool_calls=expected_tool_calls))
+
     # query = "Can you find Microsoft's stock price on the day before Windows XP was released and on the day of its release? Then, provide the percentage change between the two stock prices and the date difference between the two dates.\n\nOutput the following:\n1. A List with the price on the day before and on the day of the release\n2. The percentage change in price\n3. The difference in days between the dates"
+    # expected_tool_calls = ["financial_tools_assistant"]
+    # asyncio.run(main(query=query, expected_tool_calls=expected_tool_calls))
+
     query = "what's the weather like in Seattle tomorrow?"
-    asyncio.run(main(query=query))
+    expected_tool_calls = ["get_date_information", "get_current_weather"]
+    asyncio.run(main(query=query, expected_tool_calls=expected_tool_calls))
