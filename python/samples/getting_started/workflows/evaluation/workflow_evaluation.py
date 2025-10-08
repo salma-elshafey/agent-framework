@@ -1,7 +1,6 @@
 # Copyright (c) Microsoft. All rights reserved.
 
 import asyncio
-from uuid import uuid4
 
 from agent_framework import (
     AgentExecutorResponse,
@@ -63,16 +62,25 @@ class ResearchLead(Executor):
 
     def __init__(self, chat_client: AzureOpenAIChatClient, id: str = "writer"):
         self.agent = chat_client.create_agent(
-            instructions=(
-                "You are an excellent research leader, leverage the other researcher agents to achieve the goal."
+            instructions=("""
+You are an excellent research leader, leverage the other researcher agents to achieve the goal.
+Summerize the findings from other agents and provide a short answer.
+"""
             ),
             name="research_lead",
         )
         super().__init__(id=id)
 
     @handler
-    async def fan_in_handle(self, responses: list[AgentExecutorResponse], ctx: WorkflowContext[list[ChatMessage]]) -> None:
+    async def fan_in_handle(self, responses: list[AgentExecutorResponse], ctx: WorkflowContext[WorkflowOutputEvent]) -> None:
+        instructions = self.agent.chat_options.instructions if self.agent.chat_options and self.agent.chat_options.instructions else ""
+        user_message = responses[0].full_conversation[0]
+
         messages: list[ChatMessage] = []
+        messages.append(ChatMessage(role=Role.SYSTEM, text=instructions))
+        messages.append(ChatMessage(role=Role.USER, text=user_message.text))
+
+        # HACK: before agent framework fixes the tool output, filter out the tool messages for the research data aggregation
         for response in responses:
             print(f"* * * AgentExecutorResponse from {response.executor_id}:")
             if response.agent_run_response is not None and response.agent_run_response.messages is not None:
@@ -82,15 +90,15 @@ class ResearchLead(Executor):
                        messages.append(message)
         messages.append(ChatMessage(role="user", text="Based on the information from other agents, please provide a comprehensive answer to the original question."))
         response = await self.agent.run(messages)
-        messages.extend(response.messages)
-        # Forward the accumulated messages to the next executor in the workflow.
-        await ctx.send_message(messages)
+        await ctx.yield_output(response.messages[-1].text)
 
 
-async def main():
-    # input_prompt = "Compute all the prime numbers between 20 and 40 and then find the two largest prime numbers. What is the product of these two numbers, and what is the difference from the product of all the prime numbers between 1 and 20?\n\nPlease output the following information:\n\n1. The two largest primes between 20 and 40\n2. Product of the two largest primes between 20 and 40\n3. The difference between product of prime numbers between 1 and 20 and the product of the two largest primes between 20 and 40"
-    input_prompt = "Can you find Microsoft's stock price on the day before Windows XP was released and on the day of its release? Then, provide the percentage change between the two stock prices and the date difference between the two dates.\n\nOutput the following:\n1. A List with the price on the day before and on the day of the release\n2. The percentage change in price\n3. The difference in days between the dates"
-    # input_prompt = "what's the weather like in Seattle this week?"
+async def main(query: str):
+    tool_restrictions = """
+Only use the tools provided and only use the information from the tools to answer the question.
+If the tools do not provide enough information, respond with 'no further information provided'.
+"""
+    response = None
 
     """Build and run a simple two node agent workflow: Writer then Reviewer."""
     # Create the Azure chat client. AzureCliCredential uses your current az login.
@@ -114,7 +122,7 @@ async def main():
 
     weather_tools_assistant = chat_client.create_agent(
         instructions=(
-            "You are an expert in using weather tools to find current and historical weather data."
+            f"You are an expert in using weather tools to find current and historical weather data. {tool_restrictions}"
         ),
         name="weather_tools_assistant",
         tools=[
@@ -125,7 +133,7 @@ async def main():
 
     financial_tools_assistant = chat_client.create_agent(
         instructions=(
-            "You are an expert in using financial tools to find stock market data and information."
+            f"You are an expert in using financial tools to find stock market data and information. {tool_restrictions}"
         ),
         name="financial_tools_assistant",
         tools=[
@@ -135,11 +143,6 @@ async def main():
         ]
     )
 
-    # 2. how to get tool call and response from agent executors?
-    # 1. in research_lead, how to get inital input?
-
-    # Build the workflow using the fluent builder.
-    # Set the start node and connect an edge from writer to reviewer.
     workflow = WorkflowBuilder()    \
         .set_start_executor(start_executor)    \
         .add_fan_out_edges(start_executor, [general_tools_assistant, weather_tools_assistant, financial_tools_assistant]) \
@@ -149,11 +152,9 @@ async def main():
     # Stream events from the workflow. We aggregate partial token updates per executor for readable output.
     last_executor_id = None
 
-    events = workflow.run_stream(input_prompt)
+    events = workflow.run_stream(query)
     async for event in events:
         if isinstance(event, AgentRunUpdateEvent):
-            # AgentRunUpdateEvent contains incremental text deltas from the underlying agent.
-            # Print a prefix when the executor changes, then append updates on the same line.
             eid = event.executor_id
             if eid != last_executor_id:  # type: ignore[reportUnnecessaryComparison]
                 if last_executor_id is not None:
@@ -168,20 +169,12 @@ async def main():
         elif isinstance(event, WorkflowOutputEvent):
             print("===== Final Output =====")
             print(event.data)
-        else:
-            print(f"* * * Other event: {event}")
+            response = event.data
 
-    """
-    Sample Output:
-
-    research_lead: Charge Up Your Journey. Fun, Affordable, Electric.
-    data_search_agent: Clear message, but consider highlighting SUV specific benefits (space, versatility) for stronger
-        impact. Try more vivid language to evoke excitement. Example: "Big on Space. Big on Fun. Electric for Everyone."
-    ===== Final Output =====
-    Clear message, but consider highlighting SUV specific benefits (space, versatility) for stronger impact. Try more
-        vivid language to evoke excitement. Example: "Big on Space. Big on Fun. Electric for Everyone."
-    """
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # query = "Compute all the prime numbers between 20 and 40 and then find the two largest prime numbers. What is the product of these two numbers, and what is the difference from the product of all the prime numbers between 1 and 20?\n\nPlease output the following information:\n\n1. The two largest primes between 20 and 40\n2. Product of the two largest primes between 20 and 40\n3. The difference between product of prime numbers between 1 and 20 and the product of the two largest primes between 20 and 40"
+    # query = "Can you find Microsoft's stock price on the day before Windows XP was released and on the day of its release? Then, provide the percentage change between the two stock prices and the date difference between the two dates.\n\nOutput the following:\n1. A List with the price on the day before and on the day of the release\n2. The percentage change in price\n3. The difference in days between the dates"
+    query = "what's the weather like in Seattle tomorrow?"
+    asyncio.run(main(query=query))
