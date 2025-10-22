@@ -2,10 +2,10 @@
 
 import asyncio
 import os
+import json
 
 from agent_framework import (
     AgentExecutorResponse,
-    AgentExecutorRequest,
     AgentRunUpdateEvent,
     AgentRunResponseUpdate,
     ChatAgent,
@@ -18,30 +18,15 @@ from agent_framework import (
     WorkflowBuilder,
     WorkflowOutputEvent,
 )
+import asyncio
 from agent_framework.azure import AzureOpenAIChatClient
 from azure.identity import AzureCliCredential
 
-# from azure.identity import DefaultAzureCredential
-# from azure.ai.projects import AIProjectClient
-# from azure.ai.projects.models import (
-#     Evaluation,
-#     InputDataset,
-#     EvaluatorConfiguration,
-# )
+# Additional imports for evaluation (if needed):
 from azure.ai.evaluation import ToolCallAccuracyEvaluator
+# from azure.ai.projects import AIProjectClient
 
-# from ._tool_definitions import (
-#     calculator_tool_spec,
-#     date_tool_spec,
-#     google_search_tool_spec,
-#     wiki_search_tool_spec,
-#     current_weather_tool_spec,
-#     historical_weather_tool_spec,
-#     wolfram_alpha_tool_spec,
-#     time_series_intraday_tool_spec,
-#     time_series_daily_tool_spec,
-#     ticker_search_tool_spec,
-# )
+
 
 from _tools import (
     run_calculator,
@@ -75,35 +60,32 @@ class ResearchLead(Executor):
 
     def __init__(self, chat_client: AzureOpenAIChatClient, id: str = "writer"):
         self.agent = chat_client.create_agent(
-            instructions=("""
-You are an excellent research leader, leverage the other researcher agents to achieve the goal.
-Summerize the findings from other agents and provide a short answer.
-"""
-            ),
+            instructions="You are a research leader. Summarize findings from other agents and provide a clear answer.",
             name="research_lead",
         )
         super().__init__(id=id)
 
     @handler
     async def fan_in_handle(self, responses: list[AgentExecutorResponse], ctx: WorkflowContext[WorkflowOutputEvent]) -> None:
-        instructions = self.agent.chat_options.instructions if self.agent.chat_options and self.agent.chat_options.instructions else ""
-        user_message = responses[0].full_conversation[0]
-
-        messages: list[ChatMessage] = []
-        messages.append(ChatMessage(role=Role.SYSTEM, text=instructions))
-        messages.append(ChatMessage(role=Role.USER, text=user_message.text))
-
-        # HACK: before agent framework fixes the tool output, filter out the tool messages for the research data aggregation
+        user_query = responses[0].full_conversation[0].text
+        
+        messages = [
+            ChatMessage(role=Role.SYSTEM, text="Summarize findings from other agents."),
+            ChatMessage(role=Role.USER, text=user_query)
+        ]
+        
+        # Add agent responses
         for response in responses:
-            print(f"* * * AgentExecutorResponse from {response.executor_id}:")
-            if response.agent_run_response is not None and response.agent_run_response.messages is not None:
-                for message in response.agent_run_response.messages:
-                    print(f"  {message.role}: {message.text}")
-                    if message.role != Role.TOOL:
-                       messages.append(message)
-        messages.append(ChatMessage(role="user", text="Based on the information from other agents, please provide a comprehensive answer to the original question."))
-        response = await self.agent.run(messages)
-        await ctx.yield_output(response.messages[-1].text)
+            if response.agent_run_response and response.agent_run_response.messages:
+                final_message = next((msg for msg in reversed(response.agent_run_response.messages) 
+                                    if msg.role == Role.ASSISTANT and msg.text), None)
+                if final_message:
+                    messages.append(ChatMessage(role=Role.ASSISTANT, 
+                                              text=f"[{response.executor_id}]: {final_message.text}"))
+        
+        messages.append(ChatMessage(role=Role.USER, text="Provide a comprehensive answer."))
+        final_response = await self.agent.run(messages)
+        await ctx.yield_output(final_response.messages[-1].text)
 
 
 async def main(query: str, expected_tool_calls: list[str]) -> None:
@@ -112,6 +94,9 @@ Only use the tools provided and only use the information from the tools to answe
 If the tools do not provide enough information, respond with 'no further information provided'.
 """
     response = None
+    
+    # Store all tool calls in sequential order as they happen in the workflow
+    sequential_tool_calls = []
 
     """Build and run a simple two node agent workflow: Writer then Reviewer."""
     # Create the Azure chat client. AzureCliCredential uses your current az login.
@@ -156,87 +141,149 @@ If the tools do not provide enough information, respond with 'no further informa
         ]
     )
 
+    from tool_utils import extract_tool_definitions_by_agent, format_tool_calls_for_converter
+
     workflow = WorkflowBuilder()    \
         .set_start_executor(start_executor)    \
         .add_fan_out_edges(start_executor, [general_tools_assistant, weather_tools_assistant, financial_tools_assistant]) \
         .add_fan_in_edges([general_tools_assistant, weather_tools_assistant, financial_tools_assistant], research_lead) \
         .build()
 
-    # Stream events from the workflow. We aggregate partial token updates per executor for readable output.
-    last_executor_id = None
+    # Get tool definitions for reference
+    all_tool_definitions = extract_tool_definitions_by_agent()
 
-    tool_calls = []
+    # Stream workflow events and display all agent activities
+    print(f"\nWorkflow Execution for: '{query}'")
+    print("─" * 60)
+    
     events = workflow.run_stream(query)
+    step = 0
+    current_messages = {}  # Track ongoing messages per agent
+    pending_tool_calls = {}  # Track tool calls waiting for complete arguments
+    accumulating_args = {}  # Accumulate arguments by call_id
+    call_order = []  # Track the order of tool calls for argument assignment
+    
     async for event in events:
         if isinstance(event, AgentRunUpdateEvent):
-            eid = event.executor_id
-            if eid != last_executor_id:  # type: ignore[reportUnnecessaryComparison]
-                if last_executor_id is not None:
-                    print()
-                print(f"{eid}:", end=" ", flush=True)
-                last_executor_id = eid
-            print(event.data, end="", flush=True)
-
-            if isinstance(event.data, AgentRunResponseUpdate) and "result" in event.data.contents[0].__dict__:
-                print(f"* * * AgentRunResponseUpdate: {event.data.contents[0].result}")
-                tool_call = {
-                    # "type": "tool_call",
-                    # "name": event.data.contents[0].tool_name,
-                    # "tool_call": {
-                    #     "id": event.data.contents[0].id,
-                    #     "type": "function",
-                    #     "function": {
-                    #         "name": event.data.contents[0].tool_name,
-                    #         "arguments": event.data.contents[0].tool_input,
-                    #     },
-                    # },
-                }
-                tool_calls.append(tool_call)
+            agent = event.executor_id
+            
+            if isinstance(event.data, AgentRunResponseUpdate):
+                # Handle tool calls and results
+                if event.data.contents:
+                    for content in event.data.contents:
+                        content_type = type(content).__name__
+                        if hasattr(content, 'name') and content.name:
+                            # Initial function call - don't print yet, wait for complete args
+                            call_id = getattr(content, 'call_id', None)
+                            if call_id:
+                                accumulating_args[call_id] = ""
+                                pending_tool_calls[call_id] = {
+                                    "agent": agent,
+                                    "function": content.name,
+                                    "call_id": call_id
+                                }
+                                call_order.append(call_id)
+                            
+                        elif content_type == "FunctionCallContent" and not (hasattr(content, 'name') and content.name):
+                            # Argument chunk - accumulate
+                            args_chunk = getattr(content, 'arguments', '')
+                            call_id = getattr(content, 'call_id', '')
+                            
+                            if args_chunk:
+                                # Determine target call_id based on context
+                                target_call_id = None
+                                
+                                # First try to use the call_id if it's provided and valid
+                                if call_id and call_id in accumulating_args:
+                                    target_call_id = call_id
+                                # If no call_id or invalid, find the most recent incomplete call for this agent
+                                else:
+                                    # Look for the most recent call from this agent that's still accumulating
+                                    for cid in reversed(call_order):
+                                        if (cid in accumulating_args and 
+                                            cid in pending_tool_calls and 
+                                            pending_tool_calls[cid]['agent'] == agent):
+                                            target_call_id = cid
+                                            break
+                                
+                                if target_call_id:
+                                    accumulating_args[target_call_id] += args_chunk
+                                    
+                                    # Check if arguments are complete for this call_id
+                                    complete_args = accumulating_args[target_call_id].strip()
+                                    if complete_args.endswith('}'):
+                                        try:
+                                            import json
+                                            parsed_args = json.loads(complete_args)
+                                            call_info = pending_tool_calls[target_call_id]
+                                            
+                                            # Now print with complete arguments
+                                            step += 1
+                                            args_str = ", ".join([f"{k}='{v}'" if isinstance(v, str) else f"{k}={v}" 
+                                                                for k, v in parsed_args.items()])
+                                            print(f"{step}. [TOOL CALL] {call_info['agent']}: {call_info['function']}({args_str})")
+                                            
+                                            # Store complete tool call
+                                            sequential_tool_calls.append({
+                                                "step": step,
+                                                "agent": call_info['agent'],
+                                                "function": call_info['function'],
+                                                "call_id": target_call_id,
+                                                "args": parsed_args
+                                            })
+                                            
+                                            # Clean up completed call
+                                            del accumulating_args[target_call_id]
+                                            del pending_tool_calls[target_call_id]
+                                            call_order.remove(target_call_id)
+                                            
+                                        except json.JSONDecodeError:
+                                            # Arguments still incomplete, keep accumulating
+                                            pass
+                        
+                        elif hasattr(content, 'result') and content.call_id:
+                            # Tool result
+                            step += 1
+                            print(f"{step}. [TOOL RESULT] {agent}: {content.result}")
+                        
+                        elif hasattr(content, 'text') and content.text:
+                            # Accumulate text for complete messages
+                            if agent not in current_messages:
+                                current_messages[agent] = ""
+                            current_messages[agent] += content.text
+                
+                # Show completed messages
+                elif agent in current_messages and current_messages[agent]:
+                    step += 1
+                    message = current_messages[agent].strip()
+                    if message:
+                        print(f"{step}. [AGENT RESPONSE] {agent}: {message}")
+                    current_messages[agent] = ""
 
         elif isinstance(event, WorkflowOutputEvent):
-            print("===== Final Output =====")
-            print(event.data)
-            response = event.data
+            step += 1
+            print(f"{step}. [FINAL OUTPUT] research_lead: {event.data}")
 
-    # Run evaluation
-    print(query)
-    print(response)
-
-    import os
-    from azure.ai.evaluation import ToolCallAccuracyEvaluator
-
+    print("─" * 60)
+    
+    # Get tool calls and format for evaluation
+    formatted_tool_calls = format_tool_calls_for_converter(sequential_tool_calls)
+    # Start Evaluation ONLY on financial_tools_assistant agent executor tool calls
     model_config = {
         "azure_endpoint": os.environ.get("AZURE_OPENAI_ENDPOINT"),
         "api_key": os.environ.get("AZURE_OPENAI_API_KEY"),
         "azure_deployment": os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"),
     }
+    evaluator = ToolCallAccuracyEvaluator(model_config=model_config)
+    tool_calls_to_be_evaluated = []
+    for tool_call in formatted_tool_calls:
+        if tool_call['agent'] == "financial_tools_assistant":
+            tool_calls_to_be_evaluated.append(tool_call)
 
-    tool_call_quality_evaluator = ToolCallAccuracyEvaluator(model_config=model_config)
-    result = tool_call_quality_evaluator(
-        query="How is the weather in New York?",
-        response="The weather in New York is sunny.",
-        tool_calls={
-            "type": "tool_call",
-            "name": "fetch_weather",
-            "tool_call": {
-                "id": "call_eYtq7fMyHxDWIgeG2s26h0lJ",
-                "type": "function",
-                "function": {"name": "fetch_weather", "arguments": {"location": "New York"}},
-            },
-        },
-        tool_definitions={
-            "id": "fetch_weather",
-            "name": "fetch_weather",
-            "description": "Fetches the weather information for the specified location.",
-            "parameters": {
-                "type": "object",
-                "properties": {"location": {"type": "string", "description": "The location to fetch weather for."}},
-            },
-        },
-    )
-    print("Tool Call Quality Evaluation Result:", result)
+    financial_tool_definitions = all_tool_definitions['financial_tools_assistant']
 
-
+    evaluation_result = evaluator(query=query, tool_calls=tool_calls_to_be_evaluated, tool_definitions=financial_tool_definitions)
+    print("[TOOL CALL ACCURACY EVALUATION RESULT]", evaluation_result)
 
 if __name__ == "__main__":
     # query = "Compute all the prime numbers between 20 and 40 and then find the two largest prime numbers. What is the product of these two numbers, and what is the difference from the product of all the prime numbers between 1 and 20?\n\nPlease output the following information:\n\n1. The two largest primes between 20 and 40\n2. Product of the two largest primes between 20 and 40\n3. The difference between product of prime numbers between 1 and 20 and the product of the two largest primes between 20 and 40"
@@ -247,6 +294,6 @@ if __name__ == "__main__":
     # expected_tool_calls = ["financial_tools_assistant"]
     # asyncio.run(main(query=query, expected_tool_calls=expected_tool_calls))
 
-    query = "what's the weather like in Seattle tomorrow?"
+    query = "Search the web for MSFT stock performance in the past couple of months"
     expected_tool_calls = ["get_date_information", "get_current_weather"]
     asyncio.run(main(query=query, expected_tool_calls=expected_tool_calls))
