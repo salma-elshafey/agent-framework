@@ -27,9 +27,11 @@ from agent_framework._agents import BaseAgent
 
 from ._checkpoint import CheckpointStorage, WorkflowCheckpoint
 from ._events import WorkflowEvent
-from ._executor import Executor, RequestInfoMessage, RequestResponse, handler
+from ._executor import Executor, handler
 from ._model_utils import DictConvertible, encode_value
-from ._workflow import Workflow, WorkflowBuilder, WorkflowRunResult
+from ._request_info_executor import RequestInfoMessage, RequestResponse
+from ._workflow import Workflow, WorkflowRunResult
+from ._workflow_builder import WorkflowBuilder
 from ._workflow_context import WorkflowContext
 
 if sys.version_info >= (3, 11):
@@ -971,7 +973,6 @@ class MagenticOrchestratorExecutor(Executor):
         self._require_plan_signoff = require_plan_signoff
         self._plan_review_round = 0
         self._max_plan_review_rounds = max_plan_review_rounds
-        self._inner_loop_lock = asyncio.Lock()
         # Registry of agent executors for internal coordination (e.g., resets)
         self._agent_executors = {}
         # Terminal state marker to stop further processing after completion/limits
@@ -1071,7 +1072,7 @@ class MagenticOrchestratorExecutor(Executor):
     ) -> None:
         if self._state_restored and self._context is not None:
             return
-        state = await context.get_state()
+        state = await context.get_executor_state()
         if not state:
             self._state_restored = True
             return
@@ -1103,8 +1104,6 @@ class MagenticOrchestratorExecutor(Executor):
             task=message.task,
             participant_descriptions=self._participants,
         )
-        # Record the original user task in orchestrator context (no broadcast)
-        self._context.chat_history.append(message.task)
         self._state_restored = True
         # Non-streaming callback for the orchestrator receipt of the task
         if self._message_callback:
@@ -1316,10 +1315,10 @@ class MagenticOrchestratorExecutor(Executor):
         """Run the inner orchestration loop. Coordination phase. Serialized with a lock."""
         if self._context is None or self._task_ledger is None:
             raise RuntimeError("Context or task ledger not initialized")
-        async with self._inner_loop_lock:
-            await self._run_inner_loop_locked(context)
 
-    async def _run_inner_loop_locked(
+        await self._run_inner_loop_helper(context)
+
+    async def _run_inner_loop_helper(
         self,
         context: WorkflowContext[MagenticResponseMessage | MagenticRequestMessage, ChatMessage],
     ) -> None:
@@ -1554,7 +1553,7 @@ class MagenticAgentExecutor(Executor):
     async def _ensure_state_restored(self, context: WorkflowContext[Any, Any]) -> None:
         if self._state_restored and self._chat_history:
             return
-        state = await context.get_state()
+        state = await context.get_executor_state()
         if not state:
             self._state_restored = True
             return
@@ -1939,7 +1938,7 @@ class MagenticBuilder:
         workflow_builder = WorkflowBuilder().set_start_executor(orchestrator_executor)
 
         if self._enable_plan_review:
-            from ._executor import RequestInfoExecutor
+            from ._request_info_executor import RequestInfoExecutor
 
             request_info = RequestInfoExecutor(id="magentic_plan_review")
             workflow_builder = (
