@@ -1,8 +1,26 @@
 # Copyright (c) Microsoft. All rights reserved.
 
+"""
+Multi-Agent Workflow Evaluation with Efficient Thread Retrieval
+
+This sample demonstrates a multi-agent workflow that:
+1. Processes queries through specialized agents (general, weather, financial tools)
+2. Tracks response and message IDs for evaluation
+3. Captures complete interaction sequences
+4. Aggregates findings through a research lead agent
+5. Provides more efficient thread ID retrieval
+
+EFFICIENT THREAD RETRIEVAL:
+- find_thread_by_run_id_efficiently(): Searches recent threads first instead of all threads
+- This is more efficient than the original method when threads are created recently
+"""
+
 import asyncio
-import os
 import json
+import os
+from typing import Dict, List, Optional
+
+from dotenv import load_dotenv
 
 from agent_framework import (
     AgentExecutorResponse,
@@ -19,8 +37,16 @@ from agent_framework import (
     WorkflowOutputEvent,
 )
 from agent_framework_azure_ai import AzureAIAgentClient
-from azure.identity.aio import AzureCliCredential
+from azure.identity import AzureCliCredential
+from azure.identity.aio import AzureCliCredential as AsyncAzureCliCredential
 
+# Optional imports for conversation analysis
+try:
+    from azure.ai.evaluation import AIAgentConverter
+    from azure.ai.projects import AIProjectClient
+    HAS_AI_EVALUATION = True
+except ImportError:
+    HAS_AI_EVALUATION = False
 
 from _tools import (
     run_calculator,
@@ -35,91 +61,35 @@ from _tools import (
     find_stock_ticker,
 )
 
-# Tool utilities for evaluation
-from tool_utils import extract_tool_definitions_by_agent, format_tool_calls_for_converter
-
-"""
-Multi-Agent Workflow Evaluation with Response Tracking
-
-This sample demonstrates how to:
-1. Create a multi-agent workflow using AzureAIAgentClient
-2. Track response IDs and message IDs for evaluation purposes
-3. Capture complete interaction sequences including tool calls and results
-4. Generate comprehensive summaries from multiple specialized agents
-
-The workflow includes:
-- General tools agent (search, calculation, reference)
-- Weather tools agent (current and historical weather)
-- Financial tools agent (stock data and analysis)
-- Research lead agent (summarizes findings from all agents)
-"""
-
-from dotenv import load_dotenv
 load_dotenv()
 
 
 @executor(id="start_executor")
-async def start_executor(input: str, ctx: WorkflowContext[list[ChatMessage]]) -> None:
-    """Start executor that initiates the workflow by sending the user query to all agents.
-    
-    Args:
-        input: The user query string
-        ctx: Workflow context for sending messages
-    """
-    chat_message = ChatMessage(role="user", text=input)
-    await ctx.send_message([chat_message])
+async def start_executor(input: str, ctx: WorkflowContext[List[ChatMessage]]) -> None:
+    """Initiates the workflow by sending the user query to all specialized agents."""
+    await ctx.send_message([ChatMessage(role="user", text=input)])
 
 
 class ResearchLead(Executor):
-    """Research Lead agent that aggregates and summarizes findings from multiple specialized agents.
+    """Aggregates and summarizes findings from specialized agents."""
     
-    This executor receives responses from all specialized agents (general tools, weather tools, 
-    financial tools) and creates a comprehensive summary of their findings.
-    """
-    
-    agent: ChatAgent
-
     def __init__(self, chat_client: AzureAIAgentClient, id: str = "research_lead"):
-        """Initialize the Research Lead agent.
-        
-        Args:
-            chat_client: The Azure AI agent client for creating the agent
-            id: Unique identifier for this executor (default: "research_lead")
-        """
         self.agent = chat_client.create_agent(
             instructions="You are a research leader. Summarize findings from multiple specialized agents and provide a clear, comprehensive answer to the user's query.",
             name="research_lead",
+            store=True
         )
         super().__init__(id=id)
 
     @handler
-    async def fan_in_handle(self, responses: list[AgentExecutorResponse], ctx: WorkflowContext[WorkflowOutputEvent]) -> None:
-        print("\n" + "="*80)
-        print("RESEARCH LEAD: Analyzing findings from all agents...")
-        print("="*80)
+    async def fan_in_handle(self, responses: List[AgentExecutorResponse], ctx: WorkflowContext[WorkflowOutputEvent]) -> None:
         user_query = responses[0].full_conversation[0].text
         
-        # Collect all agent findings
-        agent_findings = []
-        
-        for response in responses:
-            executor_id = response.executor_id
-            
-            # Extract findings from agent response messages
-            findings = []
-            if response.agent_run_response and response.agent_run_response.messages:
-                for msg in response.agent_run_response.messages:
-                    if msg.role == Role.ASSISTANT and msg.text and msg.text.strip():
-                        findings.append(msg.text.strip())
-            
-            # Combine findings for this agent
-            if findings:
-                combined_findings = " ".join(findings)
-                agent_findings.append(f"[{executor_id}]: {combined_findings}")
-        
-        # Create comprehensive summary request
+        # Extract findings from all agent responses
+        agent_findings = self._extract_agent_findings(responses)
         summary_text = "\n".join(agent_findings) if agent_findings else "No specific findings were provided by the agents."
         
+        # Generate comprehensive summary
         messages = [
             ChatMessage(role=Role.SYSTEM, text="You are a research leader. Summarize findings from multiple specialized agents and provide a clear, comprehensive answer to the user's query."),
             ChatMessage(role=Role.USER, text=f"Original query: {user_query}\n\nFindings from specialized agents:\n{summary_text}\n\nPlease provide a comprehensive answer based on these findings.")
@@ -127,269 +97,235 @@ class ResearchLead(Executor):
         
         try:
             final_response = await self.agent.run(messages)
-            
-            if final_response.messages and final_response.messages[-1].text:
-                output_text = final_response.messages[-1].text
-            else:
-                output_text = f"Based on the available findings, here's what I found regarding '{user_query}': {summary_text}"
-            
-            await ctx.yield_output(output_text)
-            
-        except Exception as e:
-            print(f"Error in research lead: {e}")
-            # Use the fallback - this is what's currently being triggered
-            fallback_output = f"Based on the available findings, here's what I found regarding '{user_query}': {summary_text}"
-            await ctx.yield_output(fallback_output)
-
-async def run_workflow_with_response_tracking(query: str) -> dict:
-    """Run multi-agent workflow and track response IDs with complete interaction sequence.
+            output_text = (final_response.messages[-1].text if final_response.messages and final_response.messages[-1].text 
+                          else f"Based on the available findings, here's what I found regarding '{user_query}': {summary_text}")
+        except Exception:
+            output_text = f"Based on the available findings, here's what I found regarding '{user_query}': {summary_text}"
+        
+        await ctx.yield_output(output_text)
     
-    This function creates a workflow with multiple specialized agents, executes it with the given query,
-    and tracks all interactions for evaluation purposes.
+    def _extract_agent_findings(self, responses: List[AgentExecutorResponse]) -> List[str]:
+        """Extract findings from agent responses."""
+        agent_findings = []
+        
+        for response in responses:
+            findings = []
+            if response.agent_run_response and response.agent_run_response.messages:
+                for msg in response.agent_run_response.messages:
+                    if msg.role == Role.ASSISTANT and msg.text and msg.text.strip():
+                        findings.append(msg.text.strip())
+            
+            if findings:
+                combined_findings = " ".join(findings)
+                agent_findings.append(f"[{response.executor_id}]: {combined_findings}")
+        
+        return agent_findings
+
+async def run_workflow_with_response_tracking(query: str, chat_client: Optional[AzureAIAgentClient] = None) -> Dict:
+    """Run multi-agent workflow and track thread IDs, run IDs, and interaction sequence.
     
     Args:
-        query (str): The user query to process through the multi-agent workflow
+        query: The user query to process through the multi-agent workflow
+        chat_client: Optional AzureAIAgentClient instance
         
     Returns:
-        dict: A dictionary containing:
-            - interaction_sequence: Complete chronological sequence of all interactions
-            - agent_response_ids: Latest response ID per agent
-            - agent_message_ids: Latest message ID per agent  
-            - all_agent_response_ids: All response IDs per agent
-            - all_agent_message_ids: All message IDs per agent
-            - query: The original query
-    
-    Note:
-        This version uses AzureAIAgentClient which provides complete responses (no streaming).
+        Dictionary containing interaction sequence, thread/run IDs, and conversation analysis
     """
-    tool_restrictions = """
-Only use the tools provided and only use the information from the tools to answer the question.
-If the tools do not provide enough information, respond with 'no further information provided'.
-"""
+    if chat_client is None:
+        async with AzureAIAgentClient(async_credential=AsyncAzureCliCredential()) as client:
+            return await _run_workflow_with_client(query, client)
+    else:
+        return await _run_workflow_with_client(query, chat_client)
+
+
+async def _run_workflow_with_client(query: str, chat_client: AzureAIAgentClient) -> Dict:
+    """Execute workflow with given client and track all interactions."""
     
-    # Storage for tracking workflow execution
-    interaction_sequence = []  # Complete chronological sequence of all interactions
-    all_agent_response_ids = {}  # Track ALL response IDs per agent
-    all_agent_message_ids = {}   # Track ALL message IDs per agent
-    latest_agent_response_ids = {}  # Track latest response ID per agent
-    latest_agent_message_ids = {}   # Track latest message ID per agent
+    # Initialize tracking variables
+    thread_ids = {}
+    run_ids = {}
+    all_agent_response_ids = {}
+    all_agent_message_ids = {}
     
-    print(f"\nStarting Workflow: '{query}'")
-    print("=" * 80)
+    # Tool restrictions for specialized agents
+    tool_restrictions = ("Only use the tools provided and only use the information from the tools to answer the question. "
+                        "If the tools do not provide enough information, respond with 'no further information provided'.")
     
-    # Create Azure AI Foundry chat client with proper async context management
-    async with AzureAIAgentClient(async_credential=AzureCliCredential()) as chat_client:
-        # Create workflow components
-        research_lead = ResearchLead(chat_client=chat_client, id="research_lead")
-        
-        # Create specialized agents with comprehensive tool sets
-        general_tools_assistant = chat_client.create_agent(
-            instructions="You are an excellent research assistant with access to search, calculation, and reference tools.",
-            name="general_tools_assistant",
-            tools=[run_calculator, get_date_information, google_search, wikipedia_search, wolfram_alpha_query]
-        )
-        
-        weather_tools_assistant = chat_client.create_agent(
-            instructions=f"You are an expert in using weather tools. {tool_restrictions}",
-            name="weather_tools_assistant",
-            tools=[get_current_weather, get_historical_weather]
-        )
-        
-        financial_tools_assistant = chat_client.create_agent(
-            instructions=f"You are an expert in using financial tools. {tool_restrictions}",
-            name="financial_tools_assistant",
-            tools=[get_daily_time_series, find_stock_ticker, get_intraday_time_series]
-        )
-        
-        # Build workflow
-        workflow = WorkflowBuilder() \
-            .set_start_executor(start_executor) \
-            .add_fan_out_edges(start_executor, [general_tools_assistant, weather_tools_assistant, financial_tools_assistant]) \
-            .add_fan_in_edges([general_tools_assistant, weather_tools_assistant, financial_tools_assistant], research_lead) \
-            .build()
-        
-        # Run workflow and capture complete sequence (no streaming with AzureAIAgentClient)
-        events = workflow.run_stream(query)
-        step = 0
-        current_messages = {}      # Track ongoing messages per agent
-        
-        # Track if we've seen the research lead start processing
-        research_lead_processing = False
-        
-        async for event in events:
-            
-            if isinstance(event, WorkflowOutputEvent):
-                step += 1
-                print(f"\n" + "="*80)
-                print("RESEARCH LEAD FINAL SUMMARY:")
-                print("="*80)
-                print(f"{event.data}")
-                print("="*80)
-                
-                interaction_sequence.append({
-                    "step": step,
-                    "type": "final_output",
-                    "agent": "research_lead",
-                    "message": event.data
-                })
-                
-            elif isinstance(event, AgentRunUpdateEvent):
-                agent = event.executor_id
-                
-                # Check if research lead is starting to process
-                if agent == "research_lead":
-                    research_lead_processing = True
-                        
-                # Handle both text content and structured response updates
-                if isinstance(event.data, AgentRunResponseUpdate):
-                    # CAPTURE ALL RESPONSE IDs
-                    if event.data.response_id:
-                        # Initialize agent lists if not exists
-                        if agent not in all_agent_response_ids:
-                            all_agent_response_ids[agent] = set()
-                        all_agent_response_ids[agent].add(event.data.response_id)
-                if event.data.message_id:
-                    if agent not in all_agent_message_ids:
-                        all_agent_message_ids[agent] = set()
-                    all_agent_message_ids[agent].add(event.data.message_id)
-                
-                # Handle tool calls and results
-                if event.data.contents:
-                    for content in event.data.contents:
-                        content_type = type(content).__name__
-                        if hasattr(content, 'name') and content.name:
-                            call_id = getattr(content, 'call_id', None)
-                            args = getattr(content, 'arguments', '{}')
-                            
-                            try:
-                                parsed_args = json.loads(args) if args else {}
-                                step += 1
-                                args_str = ", ".join([f"{k}='{v}'" if isinstance(v, str) else f"{k}={v}" 
-                                                    for k, v in parsed_args.items()])
-                                print(f"{step}. [TOOL CALL] {agent}: {content.name}({args_str})")
-                                
-                                interaction_sequence.append({
-                                    "step": step,
-                                    "type": "tool_call",
-                                    "agent": agent,
-                                    "function": content.name,
-                                    "call_id": call_id,
-                                    "args": parsed_args,
-                                    "response_id": latest_agent_response_ids.get(agent),
-                                    "message_id": latest_agent_message_ids.get(agent)
-                                })
-                            except json.JSONDecodeError:
-                                # Fallback if arguments can't be parsed
-                                step += 1
-                                print(f"{step}. [TOOL CALL] {agent}: {content.name}()")
-                                interaction_sequence.append({
-                                    "step": step,
-                                    "type": "tool_call",
-                                    "agent": agent,
-                                    "function": content.name,
-                                    "call_id": call_id,
-                                    "args": {},
-                                    "response_id": latest_agent_response_ids.get(agent),
-                                    "message_id": latest_agent_message_ids.get(agent)
-                                })
-                        
-                        elif hasattr(content, 'result') and content.call_id:
-                            # Add tool result to interaction sequence
-                            step += 1
-                            print(f"{step}. [TOOL RESULT] {agent}: {content.result}")
-                            
-                            interaction_sequence.append({
-                                "step": step,
-                                "type": "tool_result",
-                                "agent": agent,
-                                "call_id": content.call_id,
-                                "result": content.result,
-                                "response_id": latest_agent_response_ids.get(agent),
-                                "message_id": latest_agent_message_ids.get(agent)
-                            })
-                        
-                        elif hasattr(content, 'text') and content.text:
-                            # Accumulate text for complete messages
-                            # Use research_lead as agent if we're in research lead processing
-                            display_agent = "research_lead" if research_lead_processing else agent
-                            if display_agent not in current_messages:
-                                current_messages[display_agent] = ""
-                            current_messages[display_agent] += content.text
-                
-                # Check if this update marks end of message (no contents or empty contents)
-                if not event.data.contents or (len(event.data.contents) == 0):
-                    # Message is complete, process accumulated text
-                    display_agent = "research_lead" if research_lead_processing else agent
-                    
-                    if display_agent in current_messages and current_messages[display_agent]:
-                        step += 1
-                        message = current_messages[display_agent].strip()
-                        if message:
-                            # Special formatting for research lead
-                            if display_agent == "research_lead":
-                                print(f"\n" + "="*80)
-                                print("RESEARCH LEAD FINAL SUMMARY:")
-                                print("="*80)
-                                print(f"{message}")
-                                print("="*80)
-                            else:
-                                print(f"{step}. [AGENT RESPONSE] {display_agent}: {message}")
-                            
-                            interaction_sequence.append({
-                                "step": step,
-                                "type": "research_summary" if display_agent == "research_lead" else "agent_response",
-                                "agent": display_agent,
-                                "message": message,
-                                "response_id": latest_agent_response_ids.get(agent),
-                                "message_id": latest_agent_message_ids.get(agent)
-                            })
-                        current_messages[display_agent] = ""
-            
-            elif isinstance(event.data, str):
-                # Handle simple text updates (non-streaming complete responses)
-                display_agent = "research_lead" if research_lead_processing else agent
-                step += 1
-                
-                # Special formatting for research lead
-                if display_agent == "research_lead":
-                    print(f"\n" + "="*80)
-                    print("RESEARCH LEAD FINAL SUMMARY:")
-                    print("="*80)
-                    print(f"{event.data}")
-                    print("="*80)
-                else:
-                    print(f"{step}. [AGENT RESPONSE] {display_agent}: {event.data}")
-                
-                interaction_sequence.append({
-                    "step": step,
-                    "type": "research_summary" if display_agent == "research_lead" else "agent_response",
-                    "agent": display_agent,
-                    "message": event.data,
-                    "response_id": latest_agent_response_ids.get(agent),
-                    "message_id": latest_agent_message_ids.get(agent)
-                })
+    # Create workflow components
+    workflow = _create_workflow(chat_client, tool_restrictions)
+    
+    # Process workflow events
+    events = workflow.run_stream(query)
+    await _process_workflow_events(events, thread_ids, run_ids, all_agent_response_ids, all_agent_message_ids)
+    
+    # Generate conversation analysis
+    converted_conversations = await _analyze_conversations(thread_ids, run_ids)
     
     return {
-        "interaction_sequence": interaction_sequence,  # Complete chronological sequence
+        # "interaction_sequence": interaction_sequence,
+        "thread_ids": thread_ids,
+        "run_ids": run_ids,
         "all_agent_response_ids": all_agent_response_ids,
         "all_agent_message_ids": all_agent_message_ids,
+        "converted_conversations": converted_conversations,
         "query": query
     }
 
-def main():
-    """Main function to run the workflow evaluation example."""
-    # Example queries for testing different agent capabilities
+
+def _create_workflow(chat_client: AzureAIAgentClient, tool_restrictions: str):
+    """Create the multi-agent workflow with specialized agents."""
+    research_lead = ResearchLead(chat_client=chat_client, id="research_lead")
     
+    # Create specialized agents
+    general_tools_assistant = chat_client.create_agent(
+        instructions="You are an excellent research assistant with access to search, calculation, and reference tools.",
+        name="general_tools_assistant",
+        tools=[run_calculator, get_date_information, google_search, wikipedia_search, wolfram_alpha_query],
+        store=True
+    )
+    
+    weather_tools_assistant = chat_client.create_agent(
+        instructions=f"You are an expert in using weather tools. {tool_restrictions}",
+        name="weather_tools_assistant",
+        tools=[get_current_weather, get_historical_weather],
+        store=True
+    )
+    
+    financial_tools_assistant = chat_client.create_agent(
+        instructions=f"You are an expert in using financial tools. {tool_restrictions}",
+        name="financial_tools_assistant",
+        tools=[get_daily_time_series, find_stock_ticker, get_intraday_time_series],
+        store=True
+    )
+    
+    # Build and return workflow
+    return (WorkflowBuilder()
+            .set_start_executor(start_executor)
+            .add_fan_out_edges(start_executor, [general_tools_assistant, weather_tools_assistant, financial_tools_assistant])
+            .add_fan_in_edges([general_tools_assistant, weather_tools_assistant, financial_tools_assistant], research_lead)
+            .build())
+
+
+async def _process_workflow_events(events, thread_ids, run_ids, all_agent_response_ids, all_agent_message_ids):
+    """Process workflow events and track interactions."""
+    
+    async for event in events:
+        if isinstance(event, WorkflowOutputEvent):
+            print(f"FINAL OUTPUT: {event.data}\n")
+            
+        elif isinstance(event, AgentRunUpdateEvent):
+            agent = event.executor_id
+
+            _track_agent_ids(event, agent, run_ids, thread_ids, all_agent_response_ids, all_agent_message_ids)
+
+
+def _track_agent_ids(event, agent, run_ids, thread_ids, all_agent_response_ids, all_agent_message_ids):
+    """Track agent response and message IDs."""
+    if isinstance(event.data, AgentRunResponseUpdate):
+        if event.data.response_id:
+            run_ids[agent] = event.data.response_id
+            if agent not in all_agent_response_ids:
+                all_agent_response_ids[agent] = set()
+            all_agent_response_ids[agent].add(event.data.response_id)
+        
+        if event.data.message_id:
+            if agent not in all_agent_message_ids:
+                all_agent_message_ids[agent] = set()
+            all_agent_message_ids[agent].add(event.data.message_id)
+                
+        # Check for thread_id using conversation_id from raw_representation (most direct approach)
+        if (hasattr(event.data, 'raw_representation') and 
+            event.data.raw_representation and 
+            hasattr(event.data.raw_representation, 'conversation_id') and 
+            event.data.raw_representation.conversation_id):
+            thread_ids[agent] = event.data.raw_representation.conversation_id
+
+
+
+async def _analyze_conversations(thread_ids: Dict, run_ids: Dict) -> Dict:
+    """Analyze conversations using AIAgentConverter if available."""
+    if not HAS_AI_EVALUATION:
+        return {"error": "azure.ai.evaluation not available - skipping conversation analysis"}
+    
+    try:
+        project_endpoint = os.environ.get("AZURE_AI_PROJECT_ENDPOINT")
+        if not project_endpoint:
+            return {"error": "AZURE_AI_PROJECT_ENDPOINT not set - skipping conversation analysis"}
+        
+        sync_project_client = AIProjectClient(
+            endpoint=project_endpoint,
+            credential=AzureCliCredential()
+        )
+        converter = AIAgentConverter(sync_project_client)
+        converted_conversations = {}
+        
+        for agent_name, run_id in run_ids.items():
+            if run_id:
+                try:
+                    thread_id = thread_ids.get(agent_name)
+                    
+                    if thread_id:
+                        converted_data = converter.convert(thread_id=thread_id, run_id=run_id)
+                        converted_conversations[agent_name] = {
+                            "thread_id": thread_id,
+                            "run_id": run_id,
+                            "converted_data": converted_data
+                        }
+                    else:
+                        converted_conversations[agent_name] = {
+                            "thread_id": None,
+                            "run_id": run_id,
+                            "error": "Could not find thread_id for this run_id"
+                        }
+                except Exception as e:
+                    converted_conversations[agent_name] = {
+                        "thread_id": thread_ids.get(agent_name),
+                        "run_id": run_id,
+                        "error": str(e)
+                    }
+        
+        return converted_conversations
+    
+    except Exception as e:
+        return {"error": f"Conversation analysis failed: {str(e)}"}
+
+
+async def main_async():
+    """Run the workflow evaluation and display results."""
     example_queries = [
         "Search the web for MSFT stock performance in the past couple of months",
         "What is the current weather in Seattle and Microsoft's stock price?",
         "Calculate the prime numbers between 20 and 40 and find their product",
     ]
     
-    query = example_queries[2]
+    query = example_queries[0]
+    result = await run_workflow_with_response_tracking(query)
     
-    # Run the workflow with response tracking
-    asyncio.run(run_workflow_with_response_tracking(query))
+    # Display conversation analysis results
+    _display_conversation_analysis(result.get('converted_conversations', {}))
+    
+
+def _display_conversation_analysis(converted_conversations: Dict):
+    """Display conversation analysis results."""
+    if not converted_conversations:
+        print("No converted conversations available")
+        return
+    
+    for agent_name, conversion_result in converted_conversations.items():
+        print(f"\n=== {agent_name.upper()} CONVERSATION ANALYSIS ===")
+        print(f"Thread ID: {conversion_result.get('thread_id')}")
+        print(f"Run ID: {conversion_result.get('run_id')}")
+        
+        if 'error' in conversion_result:
+            print(f"Error: {conversion_result['error']}")
+        elif 'converted_data' in conversion_result:
+            print(json.dumps(conversion_result['converted_data'], indent=2))
+        
+        print(f"=== END {agent_name.upper()} ANALYSIS ===\n")
+
+def main():
+    """Main function to run the workflow evaluation example."""
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
