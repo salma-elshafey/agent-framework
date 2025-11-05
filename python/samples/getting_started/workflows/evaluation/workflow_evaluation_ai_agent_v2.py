@@ -90,6 +90,7 @@ class ResearchLead(Executor):
     def __init__(self, chat_client: AzureAIAgentClientV2, id: str = "travel_planning_coordinator"):
         # store=True to preserve conversation history for evaluation
         self.agent = chat_client.create_agent(
+            id="travel_planning_coordinator",
             instructions=(
                 "You are the Travel Planning Coordinator. Your role is to synthesize information from multiple "
                 "specialized travel agents into a cohesive, actionable travel plan. You receive inputs from: "
@@ -191,7 +192,12 @@ async def _run_workflow_with_client(query: str, chat_client: AzureAIAgentClientV
                         "If the tools do not provide enough information, respond with 'no further information provided'.")
     
     # Create workflow components and keep agent references
-    workflow, agent_map = _create_workflow(chat_client, tool_restrictions)
+    # Pass project_client and credential to create separate client instances per agent
+    workflow, agent_map = await _create_workflow(
+        chat_client.project_client, 
+        chat_client.credential,
+        tool_restrictions
+    )
     
     # Process workflow events
     events = workflow.run_stream(query)
@@ -205,14 +211,31 @@ async def _run_workflow_with_client(query: str, chat_client: AzureAIAgentClientV
     }
 
 
-def _create_workflow(chat_client: AzureAIAgentClientV2, tool_restrictions: str):
-    """Create the multi-agent travel planning workflow with specialized agents."""
+async def _create_workflow(project_client, credential, tool_restrictions: str):
+    """Create the multi-agent travel planning workflow with specialized agents.
     
-    research_lead = ResearchLead(chat_client=chat_client, id="travel_planning_coordinator")
+    IMPORTANT: Each agent needs its own client instance because the V2 client stores
+    agent_name and agent_version as instance variables, causing all agents to share
+    the same agent identity if they share a client.
+    """
     
-    # Agent 1: Travel Agent Executor (main coordinator - NO TOOLS to avoid thread issues in feedback loops)
-    # store=True to preserve conversation history for evaluation (agents run sequentially, not concurrently)
-    travel_agent = chat_client.create_agent(
+    # Create separate client for ResearchLead
+    research_lead_client = AzureAIAgentClientV2(
+        project_client=project_client,
+        async_credential=credential,
+        agent_name="travel_planning_coordinator"
+    )
+    research_lead = ResearchLead(chat_client=research_lead_client, id="travel_planning_coordinator")
+    
+    # Agent 1: Travel Agent Executor (main coordinator)
+    # Create separate client with unique agent_name
+    travel_agent_client = AzureAIAgentClientV2(
+        project_client=project_client,
+        async_credential=credential,
+        agent_name="travel_agent"
+    )
+    travel_agent = travel_agent_client.create_agent(
+        id="travel_agent",
         instructions=(
             "You are the main Travel Agent coordinator. You receive user travel queries and coordinate with "
             "specialized agents. Summarize findings from specialized agents and provide comprehensive travel plans."
@@ -222,7 +245,13 @@ def _create_workflow(chat_client: AzureAIAgentClientV2, tool_restrictions: str):
     )
     
     # Agent 2: Hotel Search Executor
-    hotel_search_agent = chat_client.create_agent(
+    hotel_search_client = AzureAIAgentClientV2(
+        project_client=project_client,
+        async_credential=credential,
+        agent_name="hotel_search_agent"
+    )
+    hotel_search_agent = hotel_search_client.create_agent(
+        id="hotel_search_agent",
         instructions=f"You are a hotel search specialist. {tool_restrictions}",
         name="hotel_search_agent",
         tools=[search_hotels, get_hotel_details, check_availability],
@@ -230,7 +259,13 @@ def _create_workflow(chat_client: AzureAIAgentClientV2, tool_restrictions: str):
     )
     
     # Agent 3: Flight Search Executor
-    flight_search_agent = chat_client.create_agent(
+    flight_search_client = AzureAIAgentClientV2(
+        project_client=project_client,
+        async_credential=credential,
+        agent_name="flight_search_agent"
+    )
+    flight_search_agent = flight_search_client.create_agent(
+        id="flight_search_agent",
         instructions=f"You are a flight search specialist. {tool_restrictions}",
         name="flight_search_agent",
         tools=[search_flights, get_flight_details, check_availability],
@@ -238,7 +273,13 @@ def _create_workflow(chat_client: AzureAIAgentClientV2, tool_restrictions: str):
     )
     
     # Agent 4: Activity Search Executor
-    activity_search_agent = chat_client.create_agent(
+    activity_search_client = AzureAIAgentClientV2(
+        project_client=project_client,
+        async_credential=credential,
+        agent_name="activity_search_agent"
+    )
+    activity_search_agent = activity_search_client.create_agent(
+        id="activity_search_agent",
         instructions=f"You are an activities and attractions specialist. {tool_restrictions}",
         name="activity_search_agent",
         tools=[search_activities, get_activity_details],
@@ -246,7 +287,13 @@ def _create_workflow(chat_client: AzureAIAgentClientV2, tool_restrictions: str):
     )
     
     # Agent 5: Booking Confirmation Executor
-    booking_confirmation_agent = chat_client.create_agent(
+    booking_confirmation_client = AzureAIAgentClientV2(
+        project_client=project_client,
+        async_credential=credential,
+        agent_name="booking_confirmation_agent"
+    )
+    booking_confirmation_agent = booking_confirmation_client.create_agent(
+        id="booking_confirmation_agent",
         instructions=f"You are a booking confirmation specialist. Verify and confirm travel bookings. {tool_restrictions}",
         name="booking_confirmation_agent",
         tools=[confirm_booking, check_availability],
@@ -254,15 +301,27 @@ def _create_workflow(chat_client: AzureAIAgentClientV2, tool_restrictions: str):
     )
     
     # Agent 6: Booking Payment Executor
-    booking_payment_agent = chat_client.create_agent(
+    booking_payment_client = AzureAIAgentClientV2(
+        project_client=project_client,
+        async_credential=credential,
+        agent_name="booking_payment_agent"
+    )
+    booking_payment_agent = booking_payment_client.create_agent(
+        id="booking_payment_agent",
         instructions=f"You are a payment processing specialist. Handle payment transactions for travel bookings. {tool_restrictions}",
         name="booking_payment_agent",
         tools=[process_payment, validate_payment_method],
         store=True
     )
     
-    # Agent 7: Booking Information Aggregation Executor (NO TOOLS - just aggregates)
-    booking_info_aggregation_agent = chat_client.create_agent(
+    # Agent 7: Booking Information Aggregation Executor
+    booking_info_client = AzureAIAgentClientV2(
+        project_client=project_client,
+        async_credential=credential,
+        agent_name="booking_info_aggregation_agent"
+    )
+    booking_info_aggregation_agent = booking_info_client.create_agent(
+        id="booking_info_aggregation_agent",
         instructions=(
             "You are a booking information aggregator. You collect hotel and flight booking details, "
             "summarize key information (prices, dates, confirmation numbers), and provide aggregated "
@@ -347,6 +406,8 @@ def _track_agent_ids(event, agent, response_ids, conversation_ids):
                 
                 # Check if event has response object with id
                 if hasattr(openai_event, 'response') and hasattr(openai_event.response, 'id'):
+                    print(event)
+                    print(openai_event)
                     response_ids[agent] = openai_event.response.id
 
 
@@ -380,7 +441,7 @@ async def main_async():
         }
     
     # Save to JSON file
-    output_file = "workflow_agent_ids.json"
+    output_file = os.path.join(os.getcwd(), "workflow_agent_ids2.json")
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
     
