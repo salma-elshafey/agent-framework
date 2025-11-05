@@ -17,7 +17,7 @@ from agent_framework.exceptions import ServiceInitializationError
 from agent_framework.observability import use_observability
 from agent_framework.openai._responses_client import OpenAIBaseResponsesClient
 from azure.ai.projects.aio import AIProjectClient
-from azure.ai.projects.models import PromptAgentDefinition
+from azure.ai.agents.models import PromptAgentDefinition
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import ResourceNotFoundError
 from openai.types.responses.parsed_response import (
