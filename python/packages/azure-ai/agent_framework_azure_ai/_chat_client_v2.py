@@ -17,7 +17,7 @@ from agent_framework.exceptions import ServiceInitializationError
 from agent_framework.observability import use_observability
 from agent_framework.openai._responses_client import OpenAIBaseResponsesClient
 from azure.ai.projects.aio import AIProjectClient
-from azure.ai.agents.models import PromptAgentDefinition
+from azure.ai.projects.models import PromptAgentDefinition
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import ResourceNotFoundError
 from openai.types.responses.parsed_response import (
@@ -247,7 +247,7 @@ class AzureAIAgentClientV2(OpenAIBaseResponsesClient):
             await self.project_client.close()
 
     def _prepare_input(self, messages: MutableSequence[ChatMessage]) -> tuple[list[ChatMessage], str | None]:
-        """Prepares input from messages and converts system/developer messages to instructions."""
+        """Prepare input from messages and convert system/developer messages to instructions."""
         result: list[ChatMessage] = []
         instructions_list: list[str] = []
         instructions: str | None = None
@@ -291,11 +291,11 @@ class AzureAIAgentClientV2(OpenAIBaseResponsesClient):
         return run_options
 
     async def initialize_client(self):
-        """Initializes OpenAI client asynchronously."""
+        """Initialize OpenAI client asynchronously."""
         self.client = await self.project_client.get_openai_client()  # type: ignore
 
     def get_conversation_id(self, response: OpenAIResponse | ParsedResponse[BaseModel], store: bool) -> str | None:
-        """Gets conversation ID from response."""
+        """Get the conversation ID from the response if store is True."""
         return response.conversation.id if response.conversation and store else None
 
     def _update_agent_name(self, agent_name: str | None) -> None:
