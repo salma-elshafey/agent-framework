@@ -57,7 +57,7 @@ from agent_framework import (
 )
 
 # Import V2 client directly from source file to avoid installed package conflicts
-from agent_framework_azure_ai._chat_client_v2 import AzureAIAgentClientV2
+from agent_framework_azure_ai._client import AzureAIClient
 from azure.identity.aio import AzureDeveloperCliCredential
 from azure.ai.projects.aio import AIProjectClient
 
@@ -87,7 +87,7 @@ async def start_executor(input: str, ctx: WorkflowContext[List[ChatMessage]]) ->
 class ResearchLead(Executor):
     """Aggregates and summarizes travel planning findings from all specialized agents."""
     
-    def __init__(self, chat_client: AzureAIAgentClientV2, id: str = "travel_planning_coordinator"):
+    def __init__(self, chat_client: AzureAIClient, id: str = "travel_planning_coordinator"):
         # store=True to preserve conversation history for evaluation
         self.agent = chat_client.create_agent(
             id="travel_planning_coordinator",
@@ -145,12 +145,12 @@ class ResearchLead(Executor):
         return agent_findings
 
 
-async def run_workflow_with_response_tracking(query: str, chat_client: Optional[AzureAIAgentClientV2] = None) -> Dict:
+async def run_workflow_with_response_tracking(query: str, chat_client: Optional[AzureAIClient] = None) -> Dict:
     """Run multi-agent workflow and track conversation IDs, response IDs, and interaction sequence.
     
     Args:
         query: The user query to process through the multi-agent workflow
-        chat_client: Optional AzureAIAgentClientV2 instance
+        chat_client: Optional AzureAIClient instance
         
     Returns:
         Dictionary containing interaction sequence, conversation/response IDs, and conversation analysis
@@ -167,7 +167,7 @@ async def run_workflow_with_response_tracking(query: str, chat_client: Optional[
         )
         
         try:
-            async with AzureAIAgentClientV2(
+            async with AzureAIClient(
                 project_client=project_client,
                 async_credential=credential
             ) as client:
@@ -179,7 +179,7 @@ async def run_workflow_with_response_tracking(query: str, chat_client: Optional[
         return await _run_workflow_with_client(query, chat_client)
 
 
-async def _run_workflow_with_client(query: str, chat_client: AzureAIAgentClientV2) -> Dict:
+async def _run_workflow_with_client(query: str, chat_client: AzureAIClient) -> Dict:
     """Execute workflow with given client and track all interactions."""
     
     # Initialize tracking variables
@@ -220,7 +220,7 @@ async def _create_workflow(project_client, credential, tool_restrictions: str):
     """
     
     # Create separate client for ResearchLead
-    research_lead_client = AzureAIAgentClientV2(
+    research_lead_client = AzureAIClient(
         project_client=project_client,
         async_credential=credential,
         agent_name="travel_planning_coordinator"
@@ -229,7 +229,7 @@ async def _create_workflow(project_client, credential, tool_restrictions: str):
     
     # Agent 1: Travel Agent Executor (main coordinator)
     # Create separate client with unique agent_name
-    travel_agent_client = AzureAIAgentClientV2(
+    travel_agent_client = AzureAIClient(
         project_client=project_client,
         async_credential=credential,
         agent_name="travel_agent"
@@ -245,7 +245,7 @@ async def _create_workflow(project_client, credential, tool_restrictions: str):
     )
     
     # Agent 2: Hotel Search Executor
-    hotel_search_client = AzureAIAgentClientV2(
+    hotel_search_client = AzureAIClient(
         project_client=project_client,
         async_credential=credential,
         agent_name="hotel_search_agent"
@@ -259,7 +259,7 @@ async def _create_workflow(project_client, credential, tool_restrictions: str):
     )
     
     # Agent 3: Flight Search Executor
-    flight_search_client = AzureAIAgentClientV2(
+    flight_search_client = AzureAIClient(
         project_client=project_client,
         async_credential=credential,
         agent_name="flight_search_agent"
@@ -273,7 +273,7 @@ async def _create_workflow(project_client, credential, tool_restrictions: str):
     )
     
     # Agent 4: Activity Search Executor
-    activity_search_client = AzureAIAgentClientV2(
+    activity_search_client = AzureAIClient(
         project_client=project_client,
         async_credential=credential,
         agent_name="activity_search_agent"
@@ -287,7 +287,7 @@ async def _create_workflow(project_client, credential, tool_restrictions: str):
     )
     
     # Agent 5: Booking Confirmation Executor
-    booking_confirmation_client = AzureAIAgentClientV2(
+    booking_confirmation_client = AzureAIClient(
         project_client=project_client,
         async_credential=credential,
         agent_name="booking_confirmation_agent"
@@ -301,7 +301,7 @@ async def _create_workflow(project_client, credential, tool_restrictions: str):
     )
     
     # Agent 6: Booking Payment Executor
-    booking_payment_client = AzureAIAgentClientV2(
+    booking_payment_client = AzureAIClient(
         project_client=project_client,
         async_credential=credential,
         agent_name="booking_payment_agent"
@@ -315,7 +315,7 @@ async def _create_workflow(project_client, credential, tool_restrictions: str):
     )
     
     # Agent 7: Booking Information Aggregation Executor
-    booking_info_client = AzureAIAgentClientV2(
+    booking_info_client = AzureAIClient(
         project_client=project_client,
         async_credential=credential,
         agent_name="booking_info_aggregation_agent"
