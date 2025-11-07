@@ -17,7 +17,11 @@ from agent_framework.exceptions import ServiceInitializationError
 from agent_framework.observability import use_observability
 from agent_framework.openai._responses_client import OpenAIBaseResponsesClient
 from azure.ai.projects.aio import AIProjectClient
-from azure.ai.projects.models import PromptAgentDefinition
+from azure.ai.projects.models import (
+    PromptAgentDefinition,
+    PromptAgentDefinitionText,
+    ResponseTextFormatConfigurationJsonSchema,
+)
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import ResourceNotFoundError
 from openai.types.responses.parsed_response import (
@@ -58,6 +62,7 @@ class AzureAIClient(OpenAIBaseResponsesClient):
         project_endpoint: str | None = None,
         model_deployment_name: str | None = None,
         async_credential: AsyncTokenCredential | None = None,
+        use_latest_version: bool | None = None,
         env_file_path: str | None = None,
         env_file_encoding: str | None = None,
         **kwargs: Any,
@@ -76,6 +81,8 @@ class AzureAIClient(OpenAIBaseResponsesClient):
             model_deployment_name: The model deployment name to use for agent creation.
                 Can also be set via environment variable AZURE_AI_MODEL_DEPLOYMENT_NAME.
             async_credential: Azure async credential to use for authentication.
+            use_latest_version: Boolean flag that indicates whether to use latest agent version
+                if it exists in the service.
             env_file_path: Path to environment file for loading settings.
             env_file_encoding: Encoding of the environment file.
             kwargs: Additional keyword arguments passed to the parent class.
@@ -83,24 +90,24 @@ class AzureAIClient(OpenAIBaseResponsesClient):
         Examples:
             .. code-block:: python
 
-                from agent_framework.azure import AzureAIAgentClient
+                from agent_framework.azure import AzureAIClient
                 from azure.identity.aio import DefaultAzureCredential
 
                 # Using environment variables
                 # Set AZURE_AI_PROJECT_ENDPOINT=https://your-project.cognitiveservices.azure.com
                 # Set AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-4
                 credential = DefaultAzureCredential()
-                client = AzureAIAgentClient(async_credential=credential)
+                client = AzureAIClient(async_credential=credential)
 
                 # Or passing parameters directly
-                client = AzureAIAgentClient(
+                client = AzureAIClient(
                     project_endpoint="https://your-project.cognitiveservices.azure.com",
                     model_deployment_name="gpt-4",
                     async_credential=credential,
                 )
 
                 # Or loading from a .env file
-                client = AzureAIAgentClient(async_credential=credential, env_file_path="path/to/.env")
+                client = AzureAIClient(async_credential=credential, env_file_path="path/to/.env")
         """
         try:
             azure_ai_settings = AzureAISettings(
@@ -139,6 +146,7 @@ class AzureAIClient(OpenAIBaseResponsesClient):
         # Initialize instance variables
         self.agent_name = agent_name
         self.agent_version = agent_version
+        self.use_latest_version = use_latest_version
         self.project_client = project_client
         self.credential = async_credential
         self.model_id = azure_ai_settings.model_deployment_name
@@ -188,19 +196,38 @@ class AzureAIClient(OpenAIBaseResponsesClient):
         """
         agent_name = self.agent_name or "UnnamedAgent"
 
-        # If no agent_version is provided, create a new agent
+        # If no agent_version is provided, either use latest version or create a new agent:
         if self.agent_version is None:
+            # Try to use latest version if requested and agent exists
+            if self.use_latest_version:
+                try:
+                    existing_agent = await self.project_client.agents.retrieve(agent_name)
+                    self.agent_name = existing_agent.name
+                    self.agent_version = existing_agent.versions.latest.version
+                    return {"name": self.agent_name, "version": self.agent_version, "type": "agent_reference"}
+                except ResourceNotFoundError:
+                    # Agent doesn't exist, fall through to creation logic
+                    pass
+
             if "model" not in run_options or not run_options["model"]:
                 raise ServiceInitializationError(
                     "Model deployment name is required for agent creation, "
                     "can also be passed to the get_response methods."
                 )
 
-            args: dict[str, Any] = {
-                "model": run_options["model"],
-            }
+            args: dict[str, Any] = {"model": run_options["model"]}
+
             if "tools" in run_options:
                 args["tools"] = run_options["tools"]
+
+            if "response_format" in run_options:
+                response_format = run_options["response_format"]
+                args["text"] = PromptAgentDefinitionText(
+                    format=ResponseTextFormatConfigurationJsonSchema(
+                        name=response_format.__name__,
+                        schema=response_format.model_json_schema(),
+                    )
+                )
 
             # Combine instructions from messages and options
             combined_instructions = [
@@ -210,8 +237,6 @@ class AzureAIClient(OpenAIBaseResponsesClient):
             ]
             if combined_instructions:
                 args["instructions"] = "".join(combined_instructions)
-
-            # TODO (dmytrostruk): Add response format
 
             created_agent = await self.project_client.agents.create_version(
                 agent_name=agent_name, definition=PromptAgentDefinition(**args)
@@ -273,13 +298,12 @@ class AzureAIClient(OpenAIBaseResponsesClient):
 
         run_options["extra_body"] = {"agent": agent_reference}
 
-        # Remove properties that are not supported
-        # Model and tools captured in the agent setup
-        if "model" in run_options:
-            run_options.pop("model", None)
+        # Remove properties that are not supported on request level
+        # but were configured on agent level
+        exclude = ["model", "tools", "response_format"]
 
-        if "tools" in run_options:
-            run_options.pop("tools", None)
+        for property in exclude:
+            run_options.pop(property, None)
 
         return run_options
 

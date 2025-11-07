@@ -11,7 +11,10 @@ from agent_framework import (
     TextContent,
 )
 from agent_framework.exceptions import ServiceInitializationError
-from pydantic import ValidationError
+from azure.ai.projects.models import (
+    ResponseTextFormatConfigurationJsonSchema,
+)
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from agent_framework_azure_ai import AzureAIClient, AzureAISettings
 
@@ -23,6 +26,7 @@ def create_test_azure_ai_client(
     conversation_id: str | None = None,
     azure_ai_settings: AzureAISettings | None = None,
     should_close_client: bool = False,
+    use_latest_version: bool | None = None,
 ) -> AzureAIClient:
     """Helper function to create AzureAIClient instances for testing, bypassing normal validation."""
     if azure_ai_settings is None:
@@ -36,6 +40,7 @@ def create_test_azure_ai_client(
     client.credential = None
     client.agent_name = agent_name
     client.agent_version = agent_version
+    client.use_latest_version = use_latest_version
     client.model_id = azure_ai_settings.model_deployment_name
     client.conversation_id = conversation_id
     client._should_close_client = should_close_client  # type: ignore
@@ -435,6 +440,178 @@ async def test_azure_ai_client_agent_creation_with_tools(
     # Verify agent was created with tools
     call_args = mock_project_client.agents.create_version.call_args
     assert call_args[1]["definition"].tools == test_tools
+
+
+async def test_azure_ai_client_use_latest_version_existing_agent(
+    mock_project_client: MagicMock,
+) -> None:
+    """Test _get_agent_reference_or_create when use_latest_version=True and agent exists."""
+    client = create_test_azure_ai_client(mock_project_client, agent_name="existing-agent", use_latest_version=True)
+
+    # Mock existing agent response
+    mock_existing_agent = MagicMock()
+    mock_existing_agent.name = "existing-agent"
+    mock_existing_agent.versions.latest.version = "2.5"
+    mock_project_client.agents.retrieve = AsyncMock(return_value=mock_existing_agent)
+
+    run_options = {"model": "test-model"}
+    agent_ref = await client._get_agent_reference_or_create(run_options, None)  # type: ignore
+
+    # Verify existing agent was retrieved and used
+    mock_project_client.agents.retrieve.assert_called_once_with("existing-agent")
+    mock_project_client.agents.create_version.assert_not_called()
+
+    assert agent_ref == {"name": "existing-agent", "version": "2.5", "type": "agent_reference"}
+    assert client.agent_name == "existing-agent"
+    assert client.agent_version == "2.5"
+
+
+async def test_azure_ai_client_use_latest_version_agent_not_found(
+    mock_project_client: MagicMock,
+) -> None:
+    """Test _get_agent_reference_or_create when use_latest_version=True but agent doesn't exist."""
+    from azure.core.exceptions import ResourceNotFoundError
+
+    client = create_test_azure_ai_client(mock_project_client, agent_name="non-existing-agent", use_latest_version=True)
+
+    # Mock ResourceNotFoundError when trying to retrieve agent
+    mock_project_client.agents.retrieve = AsyncMock(side_effect=ResourceNotFoundError("Agent not found"))
+
+    # Mock agent creation response for fallback
+    mock_created_agent = MagicMock()
+    mock_created_agent.name = "non-existing-agent"
+    mock_created_agent.version = "1.0"
+    mock_project_client.agents.create_version = AsyncMock(return_value=mock_created_agent)
+
+    run_options = {"model": "test-model"}
+    agent_ref = await client._get_agent_reference_or_create(run_options, None)  # type: ignore
+
+    # Verify retrieval was attempted and creation was used as fallback
+    mock_project_client.agents.retrieve.assert_called_once_with("non-existing-agent")
+    mock_project_client.agents.create_version.assert_called_once()
+
+    assert agent_ref == {"name": "non-existing-agent", "version": "1.0", "type": "agent_reference"}
+    assert client.agent_name == "non-existing-agent"
+    assert client.agent_version == "1.0"
+
+
+async def test_azure_ai_client_use_latest_version_false(
+    mock_project_client: MagicMock,
+) -> None:
+    """Test _get_agent_reference_or_create when use_latest_version=False (default behavior)."""
+    client = create_test_azure_ai_client(mock_project_client, agent_name="test-agent", use_latest_version=False)
+
+    # Mock agent creation response
+    mock_created_agent = MagicMock()
+    mock_created_agent.name = "test-agent"
+    mock_created_agent.version = "1.0"
+    mock_project_client.agents.create_version = AsyncMock(return_value=mock_created_agent)
+
+    run_options = {"model": "test-model"}
+    agent_ref = await client._get_agent_reference_or_create(run_options, None)  # type: ignore
+
+    # Verify retrieval was not attempted and creation was used directly
+    mock_project_client.agents.retrieve.assert_not_called()
+    mock_project_client.agents.create_version.assert_called_once()
+
+    assert agent_ref == {"name": "test-agent", "version": "1.0", "type": "agent_reference"}
+
+
+async def test_azure_ai_client_use_latest_version_with_existing_agent_version(
+    mock_project_client: MagicMock,
+) -> None:
+    """Test that use_latest_version is ignored when agent_version is already provided."""
+    client = create_test_azure_ai_client(
+        mock_project_client, agent_name="test-agent", agent_version="3.0", use_latest_version=True
+    )
+
+    agent_ref = await client._get_agent_reference_or_create({}, None)  # type: ignore
+
+    # Verify neither retrieval nor creation was attempted since version is already set
+    mock_project_client.agents.retrieve.assert_not_called()
+    mock_project_client.agents.create_version.assert_not_called()
+
+    assert agent_ref == {"name": "test-agent", "version": "3.0", "type": "agent_reference"}
+
+
+class ResponseFormatModel(BaseModel):
+    """Test Pydantic model for response format testing."""
+
+    name: str
+    value: int
+    description: str
+    model_config = ConfigDict(extra="forbid")
+
+
+async def test_azure_ai_client_agent_creation_with_response_format(
+    mock_project_client: MagicMock,
+) -> None:
+    """Test agent creation with response_format configuration."""
+    client = create_test_azure_ai_client(mock_project_client, agent_name="test-agent")
+
+    # Mock agent creation response
+    mock_agent = MagicMock()
+    mock_agent.name = "test-agent"
+    mock_agent.version = "1.0"
+    mock_project_client.agents.create_version = AsyncMock(return_value=mock_agent)
+
+    run_options = {"model": "test-model", "response_format": ResponseFormatModel}
+
+    await client._get_agent_reference_or_create(run_options, None)  # type: ignore
+
+    # Verify agent was created with response format configuration
+    call_args = mock_project_client.agents.create_version.call_args
+    created_definition = call_args[1]["definition"]
+
+    # Check that text format configuration was set
+    assert hasattr(created_definition, "text")
+    assert created_definition.text is not None
+
+    # Check that the format is a ResponseTextFormatConfigurationJsonSchema
+    assert hasattr(created_definition.text, "format")
+    format_config = created_definition.text.format
+    assert isinstance(format_config, ResponseTextFormatConfigurationJsonSchema)
+
+    # Check the schema name matches the model class name
+    assert format_config.name == "ResponseFormatModel"
+
+    # Check that schema was generated correctly
+    assert format_config.schema is not None
+    schema = format_config.schema
+    assert "properties" in schema
+    assert "name" in schema["properties"]
+    assert "value" in schema["properties"]
+    assert "description" in schema["properties"]
+
+
+async def test_azure_ai_client_prepare_options_excludes_response_format(
+    mock_project_client: MagicMock,
+) -> None:
+    """Test that prepare_options excludes response_format from final run options."""
+    client = create_test_azure_ai_client(mock_project_client, agent_name="test-agent", agent_version="1.0")
+
+    messages = [ChatMessage(role=Role.USER, contents=[TextContent(text="Hello")])]
+    chat_options = ChatOptions()
+
+    with (
+        patch.object(
+            client.__class__.__bases__[0],
+            "prepare_options",
+            return_value={"model": "test-model", "response_format": ResponseFormatModel},
+        ),
+        patch.object(
+            client,
+            "_get_agent_reference_or_create",
+            return_value={"name": "test-agent", "version": "1.0", "type": "agent_reference"},
+        ),
+    ):
+        run_options = await client.prepare_options(messages, chat_options)
+
+        # response_format should be excluded from final run options
+        assert "response_format" not in run_options
+        # But extra_body should contain agent reference
+        assert "extra_body" in run_options
+        assert run_options["extra_body"]["agent"]["name"] == "test-agent"
 
 
 @pytest.fixture
