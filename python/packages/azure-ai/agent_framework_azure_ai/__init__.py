@@ -2,7 +2,7 @@
 
 import importlib.metadata
 
-from ._chat_client import AzureAIAgentClient
+#from ._chat_client import AzureAIAgentClient
 from ._client import AzureAIClient
 from ._shared import AzureAISettings
 
@@ -12,7 +12,7 @@ except importlib.metadata.PackageNotFoundError:
     __version__ = "0.0.0"  # Fallback for development mode
 
 __all__ = [
-    "AzureAIAgentClient",
+#    "AzureAIAgentClient",
     "AzureAIClient",
     "AzureAISettings",
     "__version__",
