@@ -1,0 +1,87 @@
+{
+  "agents": {
+    "hotel_search_agent": {
+      "conversation_ids": [
+        "conv_952563bc7861f24c006JhS1sJK8GkBfpIwOCC9y2F6sb4OAXoK"
+      ],
+      "response_ids": [
+        "resp_952563bc7861f24c00691079e473708190852bcd05a7982d59",
+        "resp_952563bc7861f24c00691079ec4370819082e6a250f4f4bb26"
+      ],
+      "previous_response_ids": [],
+      "response_count": 2
+    },
+    "booking_confirmation_agent": {
+      "conversation_ids": [
+        "conv_d20a7d3b0d4ff66f001ZrFkQhKKeFNSrwmHEzqLZQAcPvmOy7c"
+      ],
+      "response_ids": [
+        "resp_d20a7d3b0d4ff66f0069107a116cd881909923957d8bba090e",
+        "resp_d20a7d3b0d4ff66f0069107a25289481908b6a3a2386d02a79",
+        "resp_d20a7d3b0d4ff66f0069107a2b7ca48190aad029e7d060b17b",
+        "resp_d20a7d3b0d4ff66f0069107a325b688190827b3b03d041002c",
+        "resp_d20a7d3b0d4ff66f0069107a3921088190b2b0c7b928957baf"
+      ],
+      "previous_response_ids": [],
+      "response_count": 5
+    },
+    "booking_payment_agent": {
+      "conversation_ids": [
+        "conv_2a2994414d7faddc00bx6VPgOLbF8y4TKTH9CcVoZmAyyx7Wcu"
+      ],
+      "response_ids": [
+        "resp_2a2994414d7faddc0069107a49f3ec81908089cd369421f41b",
+        "resp_2a2994414d7faddc0069107a50fdd48190afa59f086175ed42",
+        "resp_2a2994414d7faddc0069107a59076c81909eeaf18cb59cf498"
+      ],
+      "previous_response_ids": [],
+      "response_count": 3
+    },
+    "activity_search_agent": {
+      "conversation_ids": [
+        "conv_95b2c6cfe0081c6f00YRq6GQegoimXZbjQWxXMnKVoO91S738k"
+      ],
+      "response_ids": [
+        "resp_95b2c6cfe0081c6f00691079e5439c8190bb7e71c0a96df23f",
+        "resp_95b2c6cfe0081c6f00691079ec875081908bf0f426c09cb17a"
+      ],
+      "previous_response_ids": [],
+      "response_count": 2
+    },
+    "travel_agent": {
+      "conversation_ids": [
+        "conv_de907f06e7e422a300bfvGDH7kOtTRni7OkS76PjRmFmMxT1b9"
+      ],
+      "response_ids": [
+        "resp_de907f06e7e422a300691079d569888190b1317ed93dddb471"
+      ],
+      "previous_response_ids": [],
+      "response_count": 1
+    },
+    "booking_info_aggregation_agent": {
+      "conversation_ids": [
+        "conv_8abeda26e386438400ZbUn5mqPh6eWY4o8jL2OehqEyr2uPWto",
+        "conv_5d19456d41f57d4900rSGcfaYL8tre2xInPziOWxt0APbzOarH"
+      ],
+      "response_ids": [
+        "resp_8abeda26e38643840069107a0017f48190b6a1019669464b85",
+        "resp_5d19456d41f57d490069107a001b8881909d1db83f6961a78a"
+      ],
+      "previous_response_ids": [],
+      "response_count": 2
+    },
+    "flight_search_agent": {
+      "conversation_ids": [
+        "conv_cceaee4d4df5d61900AoE7iM2gWk3V3ESV397qntQmXQlc5JGL"
+      ],
+      "response_ids": [
+        "resp_cceaee4d4df5d61900691079e4db688190b6f5199dafc45c86",
+        "resp_cceaee4d4df5d61900691079ed3188819091ce3647b4ab9c56"
+      ],
+      "previous_response_ids": [],
+      "response_count": 2
+    }
+  },
+  "query": "Plan a 3-day trip to Paris from December 15-18, 2025. Budget is $2000. Need hotel near Eiffel Tower, round-trip flights from New York JFK, and recommend 2-3 activities per day.",
+  "output": "Here's a comprehensive travel plan for your 3-day trip to Paris from December 15-18, 2025, with a focus on staying within your $2000 budget.\n\n### **Travel Plan Overview**\n\n**Total Budget:** $2000  \n**Duration:** 3 Days (December 15 - December 18, 2025)\n\n---\n\n### **Flights**\n- **Airline:** Delta Airlines\n  - **Outbound Flight:** \n    - **Flight:** DL264 \n    - **Departure:** December 15, 10:15 PM from JFK\n    - **Arrival:** December 16, 12:05 PM at CDG\n    - **Price:** $485\n  - **Return Flight:** \n    - **Flight:** DL265 \n    - **Departure:** December 18, 1:45 PM from CDG\n    - **Arrival:** December 18, 5:00 PM at JFK\n- **Total Cost for Flights:** **$485**\n\n---\n\n### **Accommodation**\n- **Hotel:** Hotel Eiffel Trocadéro\n  - **Location:** 0.3 miles from the Eiffel Tower\n  - **Rating:** 4.6\n  - **Amenities:** WiFi, Breakfast, Eiffel Tower View, Concierge\n  - **Price:** $185/night\n  - **Check-in:** December 15, Check-out: December 18\n  - **Total Cost for 3 Nights:** **$555**\n- **Address:** 35 Rue Benjamin Franklin, 16th arr., Paris\n\n---\n\n### **Daily Itinerary and Activities**\n\n#### **Day 1: December 15**\n- **Morning:** Arrive in Paris, check into the hotel.\n- **Afternoon:** \n  - **Activity:** **Eiffel Tower Summit Access**\n    - **Duration:** 2-3 hours\n    - **Price:** $35\n    - **Description:** Skip-the-line access to all three levels, including the summit for the best views of Paris.\n- **Evening:** \n  - **Activity:** **Seine River Cruise**\n    - **Duration:** 1 hour\n    - **Price:** $18\n    - **Description:** Scenic cruise past Notre-Dame, Eiffel Tower, and historic bridges, best viewed in the evening for illuminated monuments.\n\n#### **Day 2: December 16**\n- **Morning:** \n  - **Activity:** **Louvre Museum Guided Tour**\n    - **Duration:** 3 hours\n    - **Price:** $55\n    - **Description:** An expert-guided tour covering masterpieces including the Mona Lisa and Venus de Milo.\n- **Afternoon:** \n  - **Activity:** **Musée d'Orsay Visit**\n    - **Duration:** 2-3 hours\n    - **Price:** $16\n    - **Description:** Explore Impressionist masterpieces in a stunning Beaux-Arts railway station.\n- **Evening:** \n  - **Activity:** **Wine & Cheese Tasting**\n    - **Duration:** 1.5 hours\n    - **Price:** $65\n    - **Description:** Sample French wines and artisanal cheeses with expert guidance.\n\n#### **Day 3: December 17**\n- **Morning:** \n  - **Activity:** **Montmartre Walking Tour**\n    - **Duration:** 2.5 hours\n    - **Price:** $25\n    - **Description:** Discover the artistic heart of Paris, including Sacré-Cœur and artists' square.\n- **Afternoon:** \n  - **Activity:** **Versailles Palace Day Trip**\n    - **Duration:** 5-6 hours\n    - **Price:** $75\n    - **Description:** Explore the opulent palace and stunning gardens of Louis XIV, including transport.\n- **Evening:** \n  - Dinner in Montmartre or another area of choice.\n\n---\n\n### **Budget Overview**\n- **Flights:** **$485**\n- **Hotel:** **$555**\n- **Activities:** Total estimated cost for activities:\n  - Day 1: $53 \n  - Day 2: $136\n  - Day 3: $100\n  - **Total Activities Cost:** **$289**\n- **Estimated Meals and Miscellaneous:** Remaining budget for food and transportation around **$476** (approximately $159/day).\n\n**Total Estimated Cost:** **$1829** (Under budget by approximately $171)\n\n---\n\n### **Next Steps**\n1. **Flight Booking:** Confirm flights as soon as possible at **$485**.\n2. **Hotel Booking:** Reserve a room at Hotel Eiffel Trocadéro at **$555**.\n3. **Activity Reservations:** Book ahead for major activities, especially the Louvre and dinner experiences.\n4. **Dining Reservations:** Consider making reservations for popular restaurants, especially in Montmartre.\n\n---\n\nThis plan effectively utilizes your budget while offering an enriching experience in Paris. Let me know if you need further assistance!"
+}
