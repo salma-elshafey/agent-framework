@@ -272,9 +272,10 @@ async def _create_workflow(project_client, credential):
     hotel_search_agent = hotel_search_client.create_agent(
         id="hotel_search_agent",
         instructions=(
-            "You are a hotel search specialist. Find hotel accommodations using your tools. "
+            "You are a hotel search specialist. Your task is ONLY to search for and provide hotel information. "
             "Use search_hotels to find options, get_hotel_details for specifics, and check_availability to verify rooms. "
-            "Provide ONLY: hotel names, prices per night, total cost, locations, ratings, amenities, and addresses."
+            "Output format: List hotel names, prices per night, total cost for the stay, locations, ratings, amenities, and addresses. "
+            "CRITICAL: Ignore any flight, activity, payment, or booking information in the conversation. Focus exclusively on hotels."
         ),
         name="hotel_search_agent",
         tools=[search_hotels, get_hotel_details, check_availability],
@@ -290,9 +291,10 @@ async def _create_workflow(project_client, credential):
     flight_search_agent = flight_search_client.create_agent(
         id="flight_search_agent",
         instructions=(
-            "You are a flight search specialist. Find flight options using your tools. "
+            "You are a flight search specialist. Your task is ONLY to search for and provide flight information. "
             "Use search_flights to find options, get_flight_details for specifics, and check_availability for seats. "
-            "Provide ONLY: flight numbers, airlines, departure/arrival times, prices, durations, and cabin class."
+            "Output format: List flight numbers, airlines, departure/arrival times, prices, durations, and cabin class. "
+            "CRITICAL: Ignore any hotel, activity, payment, or booking information in the conversation. Focus exclusively on flights."
         ),
         name="flight_search_agent",
         tools=[search_flights, get_flight_details, check_availability],
@@ -308,9 +310,10 @@ async def _create_workflow(project_client, credential):
     activity_search_agent = activity_search_client.create_agent(
         id="activity_search_agent",
         instructions=(
-            "You are an activities specialist. Find experiences and attractions using your tools. "
+            "You are an activities specialist. Your task is ONLY to search for and provide activity information. "
             "Use search_activities to find options and get_activity_details for specifics. "
-            "Provide ONLY: activity names, descriptions, prices, durations, ratings, and categories."
+            "Output format: List activity names, descriptions, prices, durations, ratings, and categories. "
+            "CRITICAL: Ignore any hotel, flight, payment, or booking information in the conversation. Focus exclusively on activities."
         ),
         name="activity_search_agent",
         tools=[search_activities, get_activity_details],
