@@ -502,21 +502,63 @@ def confirm_booking(booking_type: str, booking_id: str, customer_info: dict) -> 
         "confirmation": confirmation_data
     })
 
-def check_availability(service_type: str, service_name: str, date: str, quantity: int = 1) -> str:
+def check_hotel_availability(hotel_name: str, check_in: str, check_out: str, rooms: int = 1) -> str:
     """
-    Check availability for hotels, flights, or activities.
+    Check availability for hotel rooms.
     """
-    # Return consistent availability for reproducible results
     availability_status = "Available"
     
     availability_data = {
-        "service_type": service_type,
-        "service_name": service_name,
-        "date": date,
-        "quantity_requested": quantity,
+        "service_type": "hotel",
+        "hotel_name": hotel_name,
+        "check_in": check_in,
+        "check_out": check_out,
+        "rooms_requested": rooms,
         "status": availability_status,
-        "available_slots": 12,
-        "price_per_unit": "$150",
+        "available_rooms": 8,
+        "price_per_night": "$185",
+        "last_checked": datetime.now().isoformat()
+    }
+    
+    return json.dumps({
+        "availability": availability_data
+    })
+
+def check_flight_availability(flight_number: str, date: str, passengers: int = 1) -> str:
+    """
+    Check availability for flight seats.
+    """
+    availability_status = "Available"
+    
+    availability_data = {
+        "service_type": "flight",
+        "flight_number": flight_number,
+        "date": date,
+        "passengers_requested": passengers,
+        "status": availability_status,
+        "available_seats": 45,
+        "price_per_passenger": "$520",
+        "last_checked": datetime.now().isoformat()
+    }
+    
+    return json.dumps({
+        "availability": availability_data
+    })
+
+def check_activity_availability(activity_name: str, date: str, participants: int = 1) -> str:
+    """
+    Check availability for activity bookings.
+    """
+    availability_status = "Available"
+    
+    availability_data = {
+        "service_type": "activity",
+        "activity_name": activity_name,
+        "date": date,
+        "participants_requested": participants,
+        "status": availability_status,
+        "available_spots": 15,
+        "price_per_person": "$45",
         "last_checked": datetime.now().isoformat()
     }
     
