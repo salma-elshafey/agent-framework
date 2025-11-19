@@ -846,6 +846,7 @@ def _trace_get_response(
                 kwargs.get("model_id")
                 or (chat_options.model_id if (chat_options := kwargs.get("chat_options")) else None)
                 or getattr(self, "model_id", None)
+                or "unknown"
             )
             service_url = str(
                 service_url_func()
@@ -933,6 +934,7 @@ def _trace_get_streaming_response(
                 kwargs.get("model_id")
                 or (chat_options.model_id if (chat_options := kwargs.get("chat_options")) else None)
                 or getattr(self, "model_id", None)
+                or "unknown"
             )
             service_url = str(
                 service_url_func()
@@ -1118,7 +1120,7 @@ def _trace_agent_run(
                     span=span,
                     provider_name=provider_name,
                     messages=messages,
-                    system_instructions=getattr(self, "instructions", None),
+                    system_instructions=getattr(getattr(self, "chat_options", None), "instructions", None),
                 )
             try:
                 response = await run_func(self, messages=messages, thread=thread, **kwargs)
@@ -1187,7 +1189,7 @@ def _trace_agent_run_stream(
                     span=span,
                     provider_name=provider_name,
                     messages=messages,
-                    system_instructions=getattr(self, "instructions", None),
+                    system_instructions=getattr(getattr(self, "chat_options", None), "instructions", None),
                 )
             try:
                 async for update in run_streaming_func(self, messages=messages, thread=thread, **kwargs):
@@ -1324,7 +1326,10 @@ def _get_span(
     attributes: dict[str, Any],
     span_name_attribute: str,
 ) -> Generator["trace.Span", Any, Any]:
-    """Start a span for a agent run."""
+    """Start a span for a agent run.
+
+    Note: `attributes` must contain the `span_name_attribute` key.
+    """
     span = get_tracer().start_span(f"{attributes[OtelAttr.OPERATION]} {attributes[span_name_attribute]}")
     span.set_attributes(attributes)
     with trace.use_span(
@@ -1353,7 +1358,8 @@ def _get_span_attributes(**kwargs: Any) -> dict[str, Any]:
         attributes[SpanAttributes.LLM_SYSTEM] = system_name
     if provider_name := kwargs.get("provider_name"):
         attributes[OtelAttr.PROVIDER_NAME] = provider_name
-    attributes[SpanAttributes.LLM_REQUEST_MODEL] = kwargs.get("model", "unknown")
+    if model_id := kwargs.get("model", chat_options.model_id):
+        attributes[SpanAttributes.LLM_REQUEST_MODEL] = model_id
     if service_url := kwargs.get("service_url"):
         attributes[OtelAttr.ADDRESS] = service_url
     if conversation_id := kwargs.get("conversation_id", chat_options.conversation_id):

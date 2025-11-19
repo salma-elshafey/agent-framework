@@ -173,7 +173,9 @@ class OpenAIBaseResponsesClient(OpenAIBase, BaseChatClient):
                 inner_exception=ex,
             ) from ex
 
-    def get_conversation_id(self, response: OpenAIResponse | ParsedResponse[BaseModel], store: bool) -> str | None:
+    def get_conversation_id(
+        self, response: OpenAIResponse | ParsedResponse[BaseModel], store: bool | None
+    ) -> str | None:
         """Get the conversation ID from the response if store is True."""
         return response.id if store else None
 
@@ -187,31 +189,7 @@ class OpenAIBaseResponsesClient(OpenAIBase, BaseChatClient):
             if isinstance(tool, ToolProtocol):
                 match tool:
                     case HostedMCPTool():
-                        mcp: Mcp = {
-                            "type": "mcp",
-                            "server_label": tool.name.replace(" ", "_"),
-                            "server_url": str(tool.url),
-                            "server_description": tool.description,
-                            "headers": tool.headers,
-                        }
-                        if tool.allowed_tools:
-                            mcp["allowed_tools"] = list(tool.allowed_tools)
-                        if tool.approval_mode:
-                            match tool.approval_mode:
-                                case str():
-                                    mcp["require_approval"] = (
-                                        "always" if tool.approval_mode == "always_require" else "never"
-                                    )
-                                case _:
-                                    if always_require_approvals := tool.approval_mode.get("always_require_approval"):
-                                        mcp["require_approval"] = {
-                                            "always": {"tool_names": list(always_require_approvals)}
-                                        }
-                                    if never_require_approvals := tool.approval_mode.get("never_require_approval"):
-                                        mcp["require_approval"] = {
-                                            "never": {"tool_names": list(never_require_approvals)}
-                                        }
-                        response_tools.append(mcp)
+                        response_tools.append(self.get_mcp_tool(tool))
                     case HostedCodeInterpreterTool():
                         tool_args: CodeInterpreterContainerCodeInterpreterToolAuto = {"type": "auto"}
                         if tool.inputs:
@@ -300,10 +278,41 @@ class OpenAIBaseResponsesClient(OpenAIBase, BaseChatClient):
                             # Map the parameter name and remove the old one
                             mapped_tool[api_param] = mapped_tool.pop(user_param)
 
+                    # Validate partial_images parameter for streaming image generation
+                    # OpenAI API requires partial_images to be between 0-3 (inclusive) for image_generation tool
+                    # Reference: https://platform.openai.com/docs/api-reference/responses/create#responses_create-tools-image_generation_tool-partial_images
+                    if "partial_images" in mapped_tool:
+                        partial_images = mapped_tool["partial_images"]
+                        if not isinstance(partial_images, int) or partial_images < 0 or partial_images > 3:
+                            raise ValueError("partial_images must be an integer between 0 and 3 (inclusive).")
+
                     response_tools.append(mapped_tool)
                 else:
                     response_tools.append(tool_dict)
         return response_tools
+
+    def get_mcp_tool(self, tool: HostedMCPTool) -> Any:
+        """Get MCP tool from HostedMCPTool."""
+        mcp: Mcp = {
+            "type": "mcp",
+            "server_label": tool.name.replace(" ", "_"),
+            "server_url": str(tool.url),
+            "server_description": tool.description,
+            "headers": tool.headers,
+        }
+        if tool.allowed_tools:
+            mcp["allowed_tools"] = list(tool.allowed_tools)
+        if tool.approval_mode:
+            match tool.approval_mode:
+                case str():
+                    mcp["require_approval"] = "always" if tool.approval_mode == "always_require" else "never"
+                case _:
+                    if always_require_approvals := tool.approval_mode.get("always_require_approval"):
+                        mcp["require_approval"] = {"always": {"tool_names": list(always_require_approvals)}}
+                    if never_require_approvals := tool.approval_mode.get("never_require_approval"):
+                        mcp["require_approval"] = {"never": {"tool_names": list(never_require_approvals)}}
+
+        return mcp
 
     async def prepare_options(
         self, messages: MutableSequence[ChatMessage], chat_options: ChatOptions
@@ -710,29 +719,8 @@ class OpenAIBaseResponsesClient(OpenAIBase, BaseChatClient):
                         uri = item.result
                         media_type = None
                         if not uri.startswith("data:"):
-                            # Raw base64 string - convert to proper data URI format
-                            # Detect format from base64 data
-                            import base64
-
-                            try:
-                                # Decode a small portion to detect format
-                                decoded_data = base64.b64decode(uri[:100])  # First ~75 bytes should be enough
-                                if decoded_data.startswith(b"\x89PNG"):
-                                    format_type = "png"
-                                elif decoded_data.startswith(b"\xff\xd8\xff"):
-                                    format_type = "jpeg"
-                                elif decoded_data.startswith(b"RIFF") and b"WEBP" in decoded_data[:12]:
-                                    format_type = "webp"
-                                elif decoded_data.startswith(b"GIF87a") or decoded_data.startswith(b"GIF89a"):
-                                    format_type = "gif"
-                                else:
-                                    # Default to png if format cannot be detected
-                                    format_type = "png"
-                            except Exception:
-                                # Fallback to png if decoding fails
-                                format_type = "png"
-                            uri = f"data:image/{format_type};base64,{uri}"
-                            media_type = f"image/{format_type}"
+                            # Raw base64 string - convert to proper data URI format using helper
+                            uri, media_type = DataContent.create_data_uri_from_base64(uri)
                         else:
                             # Parse media type from existing data URI
                             try:
@@ -948,6 +936,25 @@ class OpenAIBaseResponsesClient(OpenAIBase, BaseChatClient):
                             raw_representation=event,
                         )
                     )
+            case "response.image_generation_call.partial_image":
+                # Handle streaming partial image generation
+                image_base64 = event.partial_image_b64
+                partial_index = event.partial_image_index
+
+                # Use helper function to create data URI from base64
+                uri, media_type = DataContent.create_data_uri_from_base64(image_base64)
+
+                contents.append(
+                    DataContent(
+                        uri=uri,
+                        media_type=media_type,
+                        additional_properties={
+                            "partial_image_index": partial_index,
+                            "is_partial_image": True,
+                        },
+                        raw_representation=event,
+                    )
+                )
             case _:
                 logger.debug("Unparsed event of type: %s: %s", event.type, event)
 

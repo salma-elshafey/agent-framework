@@ -8,6 +8,7 @@ from agent_framework import (
     AGENT_FRAMEWORK_USER_AGENT,
     ChatMessage,
     ChatOptions,
+    HostedMCPTool,
     TextContent,
     get_logger,
     use_chat_middleware,
@@ -18,6 +19,7 @@ from agent_framework.observability import use_observability
 from agent_framework.openai._responses_client import OpenAIBaseResponsesClient
 from azure.ai.projects.aio import AIProjectClient
 from azure.ai.projects.models import (
+    MCPTool,
     PromptAgentDefinition,
     PromptAgentDefinitionText,
     ResponseTextFormatConfigurationJsonSchema,
@@ -71,7 +73,7 @@ class AzureAIClient(OpenAIBaseResponsesClient):
 
         Keyword Args:
             project_client: An existing AIProjectClient to use. If not provided, one will be created.
-            agent_name: The name to use when creating new agents.
+            agent_name: The name to use when creating new agents or using existing agents.
             agent_version: The version of the agent to use.
             conversation_id: Default conversation ID to use for conversations. Can be overridden by
                 conversation_id property when making a request.
@@ -192,17 +194,21 @@ class AzureAIClient(OpenAIBaseResponsesClient):
         """Determine which agent to use and create if needed.
 
         Returns:
-            str: The agent_name to use
+            dict[str, str]: The agent reference to use.
         """
-        agent_name = self.agent_name or "UnnamedAgent"
+        # Agent name must be explicitly provided by the user.
+        if self.agent_name is None:
+            raise ServiceInitializationError(
+                "Agent name is required. Provide 'agent_name' when initializing AzureAIClient "
+                "or 'name' when initializing ChatAgent."
+            )
 
         # If no agent_version is provided, either use latest version or create a new agent:
         if self.agent_version is None:
             # Try to use latest version if requested and agent exists
             if self.use_latest_version:
                 try:
-                    existing_agent = await self.project_client.agents.retrieve(agent_name)
-                    self.agent_name = existing_agent.name
+                    existing_agent = await self.project_client.agents.get(self.agent_name)
                     self.agent_version = existing_agent.versions.latest.version
                     return {"name": self.agent_name, "version": self.agent_version, "type": "agent_reference"}
                 except ResourceNotFoundError:
@@ -239,25 +245,12 @@ class AzureAIClient(OpenAIBaseResponsesClient):
                 args["instructions"] = "".join(combined_instructions)
 
             created_agent = await self.project_client.agents.create_version(
-                agent_name=agent_name, definition=PromptAgentDefinition(**args)
+                agent_name=self.agent_name, definition=PromptAgentDefinition(**args)
             )
 
-            self.agent_name = created_agent.name
             self.agent_version = created_agent.version
 
-        return {"name": agent_name, "version": self.agent_version, "type": "agent_reference"}
-
-    async def _get_conversation_id_or_create(self, run_options: dict[str, Any]) -> str:
-        # Since "conversation" property is used, remove "previous_response_id" from options
-        # Use global conversation_id as fallback
-        conversation_id = run_options.pop("previous_response_id", self.conversation_id)
-
-        if conversation_id:
-            return conversation_id
-
-        # Create a new conversation with messages
-        created_conversation = await self.client.conversations.create()
-        return created_conversation.id
+        return {"name": self.agent_name, "version": self.agent_version, "type": "agent_reference"}
 
     async def _close_client_if_needed(self) -> None:
         """Close project_client session if we created it."""
@@ -286,17 +279,26 @@ class AzureAIClient(OpenAIBaseResponsesClient):
     async def prepare_options(
         self, messages: MutableSequence[ChatMessage], chat_options: ChatOptions
     ) -> dict[str, Any]:
+        """Take ChatOptions and create the specific options for Azure AI."""
+        chat_options.store = bool(chat_options.store or chat_options.store is None)
         prepared_messages, instructions = self._prepare_input(messages)
         run_options = await super().prepare_options(prepared_messages, chat_options)
         agent_reference = await self._get_agent_reference_or_create(run_options, instructions)
 
-        store = run_options.get("store", False)
-
-        if store:
-            conversation_id = await self._get_conversation_id_or_create(run_options)
-            run_options["conversation"] = conversation_id
-
         run_options["extra_body"] = {"agent": agent_reference}
+
+        conversation_id = chat_options.conversation_id or self.conversation_id
+
+        # Handle different conversation ID formats
+        if conversation_id:
+            if conversation_id.startswith("resp_"):
+                # For response IDs, set previous_response_id and remove conversation property
+                run_options.pop("conversation", None)
+                run_options["previous_response_id"] = conversation_id
+            elif conversation_id.startswith("conv_"):
+                # For conversation IDs, set conversation and remove previous_response_id property
+                run_options.pop("previous_response_id", None)
+                run_options["conversation"] = conversation_id
 
         # Remove properties that are not supported on request level
         # but were configured on agent level
@@ -307,13 +309,9 @@ class AzureAIClient(OpenAIBaseResponsesClient):
 
         return run_options
 
-    async def initialize_client(self):
+    async def initialize_client(self) -> None:
         """Initialize OpenAI client asynchronously."""
         self.client = await self.project_client.get_openai_client()  # type: ignore
-
-    def get_conversation_id(self, response: OpenAIResponse | ParsedResponse[BaseModel], store: bool) -> str | None:
-        """Get the conversation ID from the response if store is True."""
-        return response.conversation.id if response.conversation and store else None
 
     def _update_agent_name(self, agent_name: str | None) -> None:
         """Update the agent name in the chat client.
@@ -325,3 +323,36 @@ class AzureAIClient(OpenAIBaseResponsesClient):
         # to update the agent name in the client.
         if agent_name and not self.agent_name:
             self.agent_name = agent_name
+
+    def get_mcp_tool(self, tool: HostedMCPTool) -> Any:
+        """Get MCP tool from HostedMCPTool."""
+        mcp = MCPTool(server_label=tool.name.replace(" ", "_"), server_url=str(tool.url))
+
+        if tool.allowed_tools:
+            mcp["allowed_tools"] = list(tool.allowed_tools)
+
+        if tool.approval_mode:
+            match tool.approval_mode:
+                case str():
+                    mcp["require_approval"] = "always" if tool.approval_mode == "always_require" else "never"
+                case _:
+                    if always_require_approvals := tool.approval_mode.get("always_require_approval"):
+                        mcp["require_approval"] = {"always": {"tool_names": list(always_require_approvals)}}
+                    if never_require_approvals := tool.approval_mode.get("never_require_approval"):
+                        mcp["require_approval"] = {"never": {"tool_names": list(never_require_approvals)}}
+
+        return mcp
+
+    def get_conversation_id(
+        self, response: OpenAIResponse | ParsedResponse[BaseModel], store: bool | None
+    ) -> str | None:
+        """Get the conversation ID from the response if store is True."""
+        if store:
+            # If conversation ID exists, it means that we operate with conversation
+            # so we use conversation ID as input and output.
+            if response.conversation and response.conversation.id:
+                return response.conversation.id
+            # If conversation ID doesn't exist, we operate with responses
+            # so we use response ID as input and output.
+            return response.id
+        return None
