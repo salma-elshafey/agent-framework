@@ -450,15 +450,6 @@ async def main():
     print(f"Completed tests: {len(workflow_results)}")
     for workflow_id, tool_type in workflow_results:
         print(f"  {tool_type}: {workflow_id}")
-    
-    print("\n" + "="*70)
-    print("Expected differences:")
-    print("- MCPStdioTool: execute_tool spans created client-side via AIFunction.invoke()")
-    print("- MCPStreamableHTTPTool: execute_tool spans created client-side via AIFunction.invoke()")
-    print("- MCPWebsocketTool: execute_tool spans created client-side via AIFunction.invoke()")
-    print("- HostedMCPTool: execute_tool spans created server-side in Azure AI Foundry (different operation_Id)")
-    print("="*70)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
